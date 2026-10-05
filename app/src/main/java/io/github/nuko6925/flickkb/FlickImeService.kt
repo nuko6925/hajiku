@@ -4,6 +4,8 @@ import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.text.InputType
 import android.view.KeyEvent
 import android.view.RoundedCorner
@@ -141,6 +143,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     }
 
     private fun reset() {
+        handler.removeCallbacks(toggleTimeout)
         composer.clear()
         cands = emptyList()
         selected = -1
@@ -168,6 +171,17 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         if (direct && composer.toggleKey !== key) flushDirect()
         composer.tap(key)
         afterInput()
+        // かな・英字は一定時間内の連打だけ循環 (iOS: 1.5秒)。過ぎたら同じキーで次の文字
+        handler.removeCallbacks(toggleTimeout)
+        if (keyboard.mode != Mode.NUM && key.toggle) handler.postDelayed(toggleTimeout, TOGGLE_TIMEOUT_MS)
+    }
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val toggleTimeout = Runnable {
+        if (composer.isToggling) {
+            composer.endToggle()
+            updateUi()
+        }
     }
 
     override fun onCharFlick(key: Key, s: String) = edit {
@@ -403,5 +417,9 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         if (candPanel.visibility == View.VISIBLE) {
             if (cands.isEmpty()) showCandPanel(false) else candPanel.set(cands, selected)
         }
+    }
+
+    companion object {
+        private const val TOGGLE_TIMEOUT_MS = 1500L
     }
 }
