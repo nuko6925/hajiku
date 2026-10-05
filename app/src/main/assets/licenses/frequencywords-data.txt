@@ -1,0 +1,17 @@
+English word frequency list
+Source: hermitdave/FrequencyWords — content/2018/en/en_50k.txt
+        https://github.com/hermitdave/FrequencyWords
+Original data: derived from OpenSubtitles (http://www.opensubtitles.org/)
+
+License: Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+         https://creativecommons.org/licenses/by-sa/4.0/
+
+Changes made in Hajiku:
+- kept the top 40,000 entries matching [a-z][a-z']*
+- rejoined split contractions (e.g. "don" -> "don't") and added estimated
+  frequencies for common contractions (e.g. "i'm", "it's")
+- stored as the "en" table of dict.db
+
+This modified word list (the "en" table in dict.db) is distributed under
+CC BY-SA 4.0. This license applies only to that data, not to Hajiku's
+source code (MIT) or the other bundled data.

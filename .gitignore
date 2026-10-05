@@ -1,0 +1,16 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+keystore.properties
+*.jks
+*.keystore
+# 辞書は tools/build_dict.py で生成 (CI でも生成する)
+app/src/main/assets/dict.db
+app/src/main/assets/conn.bin
+
+# Android Studio の署名付きビルド出力
+app/release/
+*.apk
+*.aab
