@@ -124,6 +124,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private class Touch(val id: Int, val key: Key, val x0: Float, val y0: Float) {
         var dir = Dir.C
         var guide = false
+        /** 十字ガイドより先にフリックした (以後ガイドは出さない) */
+        var flicked = false
         var longPressed = false
         var trackpad = false
         var lastX = x0
@@ -138,8 +140,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     private val longRunnable = Runnable {
         val t = active ?: return@Runnable
         if (t.key.type == KeyType.CHAR) {
-            t.guide = true
-            invalidate()
+            // 吹き出しが出た後は十字ガイドに切り替えない (iOS と同じ)
+            if (!t.flicked) {
+                t.guide = true
+                invalidate()
+            }
         } else if (listener.onFunctionLongPress(t.key)) {
             t.longPressed = true
             if (t.key.type == KeyType.SPACE) {
@@ -205,6 +210,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 val d = direction(t, x, y)
                 if (d != t.dir) {
                     t.dir = d
+                    if (d != Dir.C && !t.guide) t.flicked = true
                     invalidate()
                 }
             }
@@ -533,7 +539,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     }
 
     companion object {
-        /** 文字キーを長押しして十字ガイドが出るまで (iOS ≒ 1秒) */
-        private const val GUIDE_DELAY_MS = 900L
+        /** 文字キーを長押しして十字ガイドが出るまで */
+        private const val GUIDE_DELAY_MS = 600L
     }
 }
