@@ -144,6 +144,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
 
     private fun reset() {
         handler.removeCallbacks(toggleTimeout)
+        composeStart = -1
+        selfSel.clear()
         composer.clear()
         cands = emptyList()
         selected = -1
@@ -155,14 +157,35 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         candidatesStart: Int, candidatesEnd: Int,
     ) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
-        // 未確定中にカーソルがよそへ動いた (ユーザーのタップ等) → 未確定を破棄して確定扱い
-        if (!composer.isEmpty &&
-            (candidatesStart == -1 || newSelStart != candidatesEnd || newSelEnd != candidatesEnd)) {
+        if (candidatesStart >= 0) composeStart = candidatesStart
+        if (composer.isEmpty) return
+        val inside = candidatesStart >= 0 && newSelStart == newSelEnd &&
+            newSelStart in candidatesStart..candidatesEnd
+        if (!inside) {
+            // 未確定の外へカーソルが動いた (よそをタップ等) → 未確定を確定扱いで終える
             currentInputConnection?.finishComposingText()
             reset()
             updateUi()
+            return
+        }
+        // 自分で動かした位置の通知は無視 (遅れて届いた古い通知で上書きしないため)
+        val now = System.currentTimeMillis()
+        selfSel.removeAll { now - it.second > 600 }
+        if (selfSel.removeAll { it.first == newSelStart }) return
+        // 未確定内をタップした → その位置にカーソルを合わせる
+        if (selected < 0 && candidatesEnd - candidatesStart == composer.length) {
+            val pos = newSelStart - candidatesStart
+            if (pos != composer.cursor) {
+                composer.setCursor(pos)
+                updateUi()
+            }
         }
     }
+
+    /** 未確定文字列の先頭の絶対位置 (エディタからの通知で更新。不明なら -1) */
+    private var composeStart = -1
+    /** 自分で setSelection した位置と時刻 */
+    private val selfSel = ArrayDeque<Pair<Int, Long>>()
 
     // ---- KeyboardView.Listener ----
 
@@ -201,6 +224,10 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
                     if (direct) flushDirect()
                 } else if (composer.isEmpty) {
                     sendDownUpKeyEvents(KeyEvent.KEYCODE_DPAD_RIGHT)
+                } else if (selected < 0 && !composer.cursorAtEnd) {
+                    // 未確定文字列内でカーソルを右へ
+                    composer.moveCursor(+1)
+                    showComposing()
                 }
                 updateUi()
             }
@@ -262,9 +289,13 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     }
 
     override fun onFunctionLongPress(key: Key): Boolean = when (key.type) {
-        // 未確定中でも可 (iOS と同じ)。未確定は確定してからカーソルを動かす
+        // 未確定中は未確定文字列の中でカーソルを動かす (候補選択中なら読みに戻す)
         KeyType.SPACE -> {
-            edit { commitAll(); updateUi() }
+            if (!composer.isEmpty && !direct && selected >= 0) edit {
+                selected = -1
+                showComposing()
+                updateUi()
+            } else if (direct) edit { commitAll(); updateUi() }
             true
         }
         KeyType.EMOJI -> {
@@ -275,6 +306,14 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     }
 
     override fun onCursorMove(dx: Int, dy: Int) {
+        if (!composer.isEmpty && !direct) {
+            if (dx != 0) edit {
+                composer.moveCursor(dx)
+                showComposing()
+                updateUi()
+            }
+            return
+        }
         val code = when {
             dx < 0 -> KeyEvent.KEYCODE_DPAD_LEFT
             dx > 0 -> KeyEvent.KEYCODE_DPAD_RIGHT
@@ -356,9 +395,16 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         if (t.isEmpty()) {
             if (composingShown) ic.setComposingText("", 1)
             composingShown = false
+            composeStart = -1
         } else {
             ic.setComposingText(t, 1)
             composingShown = true
+            // カーソルが末尾以外ならエディタ上のカーソルも合わせる
+            if (selected < 0 && !composer.cursorAtEnd && composeStart >= 0) {
+                val pos = composeStart + composer.cursor
+                ic.setSelection(pos, pos)
+                selfSel.addLast(pos to System.currentTimeMillis())
+            }
         }
     }
 
@@ -368,6 +414,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         currentInputConnection?.commitText(composer.text, 1)
         composer.clear()
         composingShown = false
+        composeStart = -1
         cands = emptyList()
         selected = -1
     }
@@ -381,6 +428,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         val typed = composer.text.substring(0, c.readingLen)
         currentInputConnection?.commitText(c.text, 1)
         composingShown = false
+        // 残りの未確定は確定した文字列の直後から始まる
+        if (composeStart >= 0) composeStart += c.text.length
         // 予測候補は本来の読みで学習 (きょう で選んだ 共有 → きょうゆう)
         if (!noLearn && c.learnable && c.text != typed) converter.learn(c.reading ?: typed, c.text)
         composer.consume(c.readingLen)
@@ -409,6 +458,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         keyboard.state = UiState(
             composing = !composer.isEmpty && !direct,
             toggling = composer.isToggling,
+            cursorNext = composer.isToggling || (!composer.isEmpty && selected < 0 && !composer.cursorAtEnd),
             cycleEnabled = cycleEnabled(),
             modifiable = keyboard.mode == Mode.KANA && selected < 0 &&
                 composer.lastChar()?.let { KanaModifier.next(it) } != null,

@@ -58,7 +58,6 @@ python3 tools/build_dict.py   # 辞書を生成 (app/src/main/assets/dict.db, co
 ## 未実装
 
 - 文節区切りの手動変更、文全体の別候補 (N-best)
-- 未確定文字列内のカーソル移動
 - 絵文字の検索・肌の色の選択
 - 英語の次単語予測
 - ユーザ辞書のエクスポート / インポート

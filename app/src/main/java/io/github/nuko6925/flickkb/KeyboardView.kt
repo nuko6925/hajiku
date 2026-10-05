@@ -18,6 +18,8 @@ import kotlin.math.min
 data class UiState(
     val composing: Boolean = false,
     val toggling: Boolean = false,
+    /** → キーが使えるか (トグル中、または未確定内でカーソルが末尾以外) */
+    val cursorNext: Boolean = false,
     /** ↺ / ↻ が使えるか */
     val cycleEnabled: Boolean = false,
     /** 小゛゜ が効く文字が末尾にある */
@@ -32,8 +34,9 @@ class KbTheme(dark: Boolean) {
     val shadow = if (dark) 0x66000000 else 0x55898A8D
     val text = if (dark) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
     val disabled = if (dark) 0xFF8E8E93.toInt() else 0xFFA5A5A5.toInt()
-    val guide = if (dark) 0xFF3A3A3C.toInt() else 0xFFA9AEB7.toInt()
-    val guideText = 0xFFFFFFFF.toInt()
+    /** 押下中・フリック選択中の青 (ライト/ダーク共通) */
+    val accent = 0xFF3C86F4.toInt()
+    val onAccent = 0xFFFFFFFF.toInt()
     val candSelected = if (dark) 0xFF5C5C5F.toInt() else 0xFFFFFFFF.toInt()
     val separator = if (dark) 0xFF4A4A4D.toInt() else 0xFFB3B6BD.toInt()
 }
@@ -182,7 +185,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                     listener.onFunction(k)
                     handler.postDelayed(repeatRunnable, 400)
                 } else {
-                    handler.postDelayed(longRunnable, if (k.type == KeyType.CHAR) 350 else 500)
+                    handler.postDelayed(longRunnable, if (k.type == KeyType.CHAR) GUIDE_DELAY_MS else 500L)
                 }
                 invalidate()
             }
@@ -273,17 +276,34 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val r = rects[k] ?: return
         val t = active
         val pressed = t?.key === k
+        // 十字ガイド表示中は他のキーのラベルを薄く
+        val cross = t != null && crossVisible(t)
+        val dim = cross && !pressed
+        // 文字キーを押している間は青。フリック中はグレー (ポップアップ側が主役)
+        val flicking = pressed && k.type == KeyType.CHAR && !cross && t!!.dir != Dir.C
+        val blue = pressed && k.type == KeyType.CHAR && !cross && !flicking
         if (k.type == KeyType.EMOJI) {
-            drawEmoji(c, r.centerX(), r.centerY(), 13 * dp, theme.text)
+            drawEmoji(c, r.centerX(), r.centerY(), 13 * dp, if (dim) theme.disabled else theme.text)
             return
         }
         // 影 → キー面
         fill.color = theme.shadow
         tmp.set(r); tmp.offset(0f, 1 * dp)
         c.drawRoundRect(tmp, radius, radius, fill)
-        fill.color = if (pressed) theme.pressed else if (k.isFunction) theme.func else theme.key
+        fill.color = when {
+            blue -> theme.accent
+            flicking -> theme.pressed
+            pressed && k.type != KeyType.CHAR -> theme.pressed
+            k.isFunction -> theme.func
+            else -> theme.key
+        }
         c.drawRoundRect(r, radius, radius, fill)
         if (t?.trackpad == true) return  // トラックパッド中はラベルを消す (iOS と同じ)
+        val fg = when {
+            blue -> theme.onAccent
+            dim -> theme.disabled
+            else -> theme.text
+        }
 
         val cx = r.centerX()
         val cy = r.centerY()
@@ -291,63 +311,147 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         when (k.type) {
             KeyType.CHAR -> {
                 if (k.sub != null) {
-                    text(c, k.label, cx, cy - s * 0.12f, s * 0.44f, theme.text)
-                    text(c, k.sub, cx, cy + s * 0.25f, s * 0.24f, theme.text)
+                    text(c, k.label, cx, cy - s * 0.12f, s * 0.44f, fg)
+                    text(c, k.sub, cx, cy + s * 0.25f, s * 0.24f, fg)
                 } else {
                     val latin = k.label.first().code < 0x3000
-                    text(c, k.label, cx, cy, if (latin) s * 0.36f else s * 0.47f, theme.text,
+                    text(c, k.label, cx, cy, if (latin) s * 0.36f else s * 0.47f, fg,
                         spacing = if (latin) 0.14f else 0f)
                 }
             }
-            KeyType.CURSOR_NEXT -> drawArrow(c, cx, cy, s * 0.42f, if (state.toggling) theme.text else theme.disabled)
-            KeyType.TOGGLE_BACK -> drawUndo(c, cx, cy, s * 0.36f, if (state.cycleEnabled) theme.text else theme.disabled, false)
-            KeyType.TOGGLE_FWD -> drawUndo(c, cx, cy, s * 0.36f, if (state.cycleEnabled) theme.text else theme.disabled, true)
-            KeyType.MODE -> text(c, k.label, cx, cy, s * 0.36f, theme.text)
-            KeyType.DELETE -> drawBackspace(c, cx, cy, s * 0.5f, theme.text)
-            KeyType.SPACE -> text(c, if (state.composing) "次候補" else "空白", cx, cy, s * 0.34f, theme.text)
+            KeyType.CURSOR_NEXT -> drawArrow(c, cx, cy, s * 0.42f, if (state.cursorNext) fg else theme.disabled)
+            KeyType.TOGGLE_BACK -> drawUndo(c, cx, cy, s * 0.36f, if (state.cycleEnabled) fg else theme.disabled, false)
+            KeyType.TOGGLE_FWD -> drawUndo(c, cx, cy, s * 0.36f, if (state.cycleEnabled) fg else theme.disabled, true)
+            KeyType.MODE -> text(c, k.label, cx, cy, s * 0.36f, fg)
+            KeyType.DELETE -> drawBackspace(c, cx, cy, s * 0.5f, fg)
+            KeyType.SPACE -> text(c, if (state.composing) "次候補" else "空白", cx, cy, s * 0.34f, fg)
             KeyType.ENTER ->
-                if (state.composing) text(c, "確定", cx, cy, s * 0.34f, theme.text)
-                else drawEnter(c, cx, cy, s * 0.6f, theme.text)
+                if (state.composing) text(c, "確定", cx, cy, s * 0.34f, fg)
+                else drawEnter(c, cx, cy, s * 0.6f, fg)
             KeyType.MODIFIER ->
-                if (state.modifiable) text(c, "小゛゜", cx, cy, s * 0.36f, theme.text)
-                else text(c, "^_^", cx, cy, s * 0.36f, theme.text)
-            KeyType.CASE -> text(c, k.label, cx, cy, s * 0.36f, theme.text, spacing = 0.1f)
+                if (state.modifiable) text(c, "小゛゜", cx, cy, s * 0.36f, fg)
+                else text(c, "^_^", cx, cy, s * 0.36f, fg)
+            KeyType.CASE -> text(c, k.label, cx, cy, s * 0.36f, fg, spacing = 0.1f)
             KeyType.EMOJI -> {}
         }
     }
 
-    /** フリック中は選択方向のポップアップ、長押しで十字ガイド */
+    /** 十字ガイドを出すか: 長押し (約1秒) した時だけ。フリックだけなら1方向のポップアップ */
+    private fun crossVisible(t: Touch) =
+        t.key.type == KeyType.CHAR && !t.trackpad && t.guide
+
+    private val crossPath = Path()
+    private val armPath = Path()
+    private val cell = RectF()
+
+    /** iOS と同じ十字ガイド: 白い十字に、選択中のマスだけ青 */
     private fun drawGuide(c: Canvas) {
         val t = active ?: return
+        if (t.key.type != KeyType.CHAR || t.trackpad) return
+        if (!crossVisible(t)) {
+            if (t.dir != Dir.C && t.dir != Dir.NONE) drawFlickPopup(c, t)
+            return
+        }
         val k = t.key
-        if (k.type != KeyType.CHAR) return
         val r = rects[k] ?: return
-        if (t.dir != Dir.C && t.dir != Dir.NONE) {
-            tile(c, r, t.dir, k.flick[t.dir]!!, selected = true)
-        } else if (t.guide) {
-            for (d in Dir.L..Dir.D) k.flick[d]?.let { tile(c, r, d, it, selected = false) }
-            tile(c, r, Dir.C, k.flick[Dir.C]!!, selected = true)
+        // 1マス = キー + 隙間。隣のマスと隙間なく繋がる
+        val cw = r.width() + gap
+        val ch = r.height() + gap
+        val cl = r.left - gap / 2
+        val ct = r.top - gap / 2
+        val rad = radius * 1.4f
+        val left = if (k.flick[Dir.L] != null) cl - cw else cl
+        val right = if (k.flick[Dir.R] != null) cl + 2 * cw else cl + cw
+        val top = if (k.flick[Dir.U] != null) ct - ch else ct
+        val bottom = if (k.flick[Dir.D] != null) ct + 2 * ch else ct + ch
+        crossPath.reset()
+        crossPath.addRoundRect(left, ct, right, ct + ch, rad, rad, Path.Direction.CW)
+        armPath.reset()
+        armPath.addRoundRect(cl, top, cl + cw, bottom, rad, rad, Path.Direction.CW)
+        crossPath.op(armPath, Path.Op.UNION)
+
+        // 影 → 白い十字
+        c.save()
+        c.translate(0f, 1.5f * dp)
+        fill.color = theme.shadow
+        c.drawPath(crossPath, fill)
+        c.restore()
+        fill.color = theme.key
+        c.drawPath(crossPath, fill)
+
+        // 選択中のマスを青で (十字の形で切り抜くので外側の角は丸いまま)
+        if (t.dir != Dir.NONE) {
+            cellRect(cl, ct, cw, ch, t.dir)
+            c.save()
+            c.clipPath(crossPath)
+            fill.color = theme.accent
+            c.drawRect(cell, fill)
+            c.restore()
+        }
+        for (d in Dir.C..Dir.D) {
+            val s = k.flick[d] ?: continue
+            cellRect(cl, ct, cw, ch, d)
+            text(c, s, cell.centerX(), cell.centerY(), keyH * 0.5f,
+                if (d == t.dir) theme.onAccent else theme.text)
         }
     }
 
-    private fun tile(c: Canvas, base: RectF, dir: Int, s: String, selected: Boolean) {
-        val w = base.width()
-        val h = base.height()
-        tmp.set(base)
-        when (dir) {
-            Dir.L -> tmp.offset(-w, 0f)
-            Dir.R -> tmp.offset(w, 0f)
-            Dir.U -> tmp.offset(0f, -h)
-            Dir.D -> tmp.offset(0f, h)
+    /** フリック方向に出る白い吹き出し (押したキーへ向かう三角のしっぽ付き) */
+    private fun drawFlickPopup(c: Canvas, t: Touch) {
+        val k = t.key
+        val r = rects[k] ?: return
+        val s = k.flick[t.dir] ?: return
+        val cw = r.width() + gap
+        val ch = r.height() + gap
+        val cl = r.left - gap / 2
+        val ct = r.top - gap / 2
+        cellRect(cl, ct, cw, ch, t.dir)
+        val rad = radius * 1.4f
+        // 本体: キー側の辺を少し離して、しっぽの付け根を作る
+        val body = RectF(cell)
+        val pull = gap * 2.5f
+        when (t.dir) {
+            Dir.U -> { body.top -= gap * 2; body.bottom -= pull }
+            Dir.D -> { body.bottom += gap * 2; body.top += pull }
+            Dir.L -> { body.right -= pull }
+            Dir.R -> { body.left += pull }
         }
+        crossPath.reset()
+        crossPath.addRoundRect(body, rad, rad, Path.Direction.CW)
+        // しっぽ: 本体のキー側の辺から、押したキーの辺の中央を少し越えた所へ
+        armPath.reset()
+        val inset = rad * 0.6f
+        val tip = gap * 1.5f
+        when (t.dir) {
+            Dir.U -> { armPath.moveTo(body.left, body.bottom - inset); armPath.lineTo(body.right, body.bottom - inset)
+                armPath.lineTo(r.centerX(), r.top + tip) }
+            Dir.D -> { armPath.moveTo(body.left, body.top + inset); armPath.lineTo(body.right, body.top + inset)
+                armPath.lineTo(r.centerX(), r.bottom - tip) }
+            Dir.L -> { armPath.moveTo(body.right - inset, body.top); armPath.lineTo(body.right - inset, body.bottom)
+                armPath.lineTo(r.left + tip, r.centerY()) }
+            Dir.R -> { armPath.moveTo(body.left + inset, body.top); armPath.lineTo(body.left + inset, body.bottom)
+                armPath.lineTo(r.right - tip, r.centerY()) }
+        }
+        armPath.close()
+        crossPath.op(armPath, Path.Op.UNION)
+        c.save()
+        c.translate(0f, 1.5f * dp)
         fill.color = theme.shadow
-        tmp.offset(0f, 1.5f * dp)
-        c.drawRoundRect(tmp, radius, radius, fill)
-        tmp.offset(0f, -1.5f * dp)
-        fill.color = if (selected) theme.key else theme.guide
-        c.drawRoundRect(tmp, radius, radius, fill)
-        text(c, s, tmp.centerX(), tmp.centerY(), keyH * if (selected) 0.56f else 0.44f,
-            if (selected) theme.text else theme.guideText)
+        c.drawPath(crossPath, fill)
+        c.restore()
+        fill.color = theme.key
+        c.drawPath(crossPath, fill)
+        text(c, s, body.centerX(), body.centerY(), keyH * 0.6f, theme.text)
+    }
+
+    private fun cellRect(cl: Float, ct: Float, cw: Float, ch: Float, dir: Int) {
+        cell.set(cl, ct, cl + cw, ct + ch)
+        when (dir) {
+            Dir.L -> cell.offset(-cw, 0f)
+            Dir.R -> cell.offset(cw, 0f)
+            Dir.U -> cell.offset(0f, -ch)
+            Dir.D -> cell.offset(0f, ch)
+        }
     }
 
     private fun text(c: Canvas, s: String, cx: Float, cy: Float, size: Float, color: Int, spacing: Float = 0f) {
@@ -426,5 +530,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         c.drawOval(cx + r * 0.18f, cy - r * 0.48f, cx + r * 0.42f, cy - r * 0.08f, fill)
         tmp.set(cx - r * 0.6f, cy - r * 0.35f, cx + r * 0.6f, cy + r * 0.62f)
         c.drawArc(tmp, 0f, 180f, true, fill)
+    }
+
+    companion object {
+        /** 文字キーを長押しして十字ガイドが出るまで (iOS ≒ 1秒) */
+        private const val GUIDE_DELAY_MS = 900L
     }
 }

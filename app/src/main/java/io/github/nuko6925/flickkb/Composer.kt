@@ -1,10 +1,16 @@
 package io.github.nuko6925.flickkb
 
-/** 未確定文字列とトグル状態 */
+/** 未確定文字列・カーソル位置・トグル状態 */
 class Composer {
     private val sb = StringBuilder()
     val text: String get() = sb.toString()
     val isEmpty: Boolean get() = sb.isEmpty()
+    val length: Int get() = sb.length
+
+    /** 未確定文字列内のカーソル位置 (0..length)。入力・削除はここで行う */
+    var cursor = 0
+        private set
+    val cursorAtEnd: Boolean get() = cursor == sb.length
 
     /** 同じキーの連打で循環中のキー */
     var toggleKey: Key? = null
@@ -25,7 +31,7 @@ class Composer {
             cycleIndex = 0
             return
         }
-        if (toggleKey === key && cycleKey === key && lastLen in 1..sb.length) {
+        if (toggleKey === key && cycleKey === key && lastLen in 1..cursor) {
             stepCycle(+1)
         } else {
             toggleKey = key
@@ -65,40 +71,68 @@ class Composer {
         cycleKey = null
     }
 
+    /** カーソルの前の1文字を削除 */
     fun backspace() {
         dropCycle()
-        if (sb.isNotEmpty()) {
-            val cp = sb.codePointBefore(sb.length)
-            sb.setLength(sb.length - Character.charCount(cp))
+        if (cursor > 0) {
+            val n = Character.charCount(sb.codePointBefore(cursor))
+            sb.delete(cursor - n, cursor)
+            cursor -= n
         }
     }
 
-    fun lastChar(): Char? = sb.lastOrNull()
+    /** カーソルの直前の文字 (小゛゜ や a/A の対象) */
+    fun lastChar(): Char? = if (cursor > 0) sb[cursor - 1] else null
 
     fun replaceLastChar(c: Char) {
         dropCycle()
-        if (sb.isNotEmpty()) sb.setCharAt(sb.length - 1, c)
+        if (cursor > 0) sb.setCharAt(cursor - 1, c)
+    }
+
+    /** カーソルを動かす。トグルは終了 */
+    fun moveCursor(delta: Int) {
+        dropCycle()
+        var c = cursor
+        repeat(kotlin.math.abs(delta)) {
+            c = if (delta > 0) {
+                if (c < sb.length) c + Character.charCount(sb.codePointAt(c)) else c
+            } else {
+                if (c > 0) c - Character.charCount(sb.codePointBefore(c)) else c
+            }
+        }
+        cursor = c
+    }
+
+    /** 外部 (エディタ上のタップ等) からカーソル位置を合わせる */
+    fun setCursor(pos: Int) {
+        if (pos == cursor) return
+        dropCycle()
+        cursor = pos.coerceIn(0, sb.length)
     }
 
     /** 先頭 n 文字を消費 (文節確定) */
     fun consume(n: Int) {
         dropCycle()
-        sb.delete(0, n.coerceAtMost(sb.length))
+        val k = n.coerceAtMost(sb.length)
+        sb.delete(0, k)
+        cursor = (cursor - k).coerceAtLeast(0)
     }
 
     fun clear() {
         sb.setLength(0)
+        cursor = 0
         dropCycle()
     }
 
     private fun append(s: String) {
-        sb.append(s)
+        sb.insert(cursor, s)
+        cursor += s.length
         lastLen = s.length
     }
 
     private fun replaceLast(s: String) {
-        sb.setLength(sb.length - lastLen)
-        sb.append(s)
+        sb.replace(cursor - lastLen, cursor, s)
+        cursor += s.length - lastLen
         lastLen = s.length
     }
 }
