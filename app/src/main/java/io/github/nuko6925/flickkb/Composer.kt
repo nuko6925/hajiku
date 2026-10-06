@@ -19,8 +19,12 @@ class Composer {
     private var cycleKey: Key? = null
     private var cycleIndex = 0
     private var lastLen = 0
+    /** ↺/↻ で循環させた直後 (次に同じキーを押すと新しい文字になる) */
+    private var steppedByArrow = false
     val isToggling: Boolean get() = toggleKey != null
     val canCycle: Boolean get() = cycleKey != null
+    /** かな・英字で ↺/↻ が効くか: 連打中か、↺/↻ で循環させた直後 */
+    val canArrowCycle: Boolean get() = cycleKey != null && (toggleKey != null || steppedByArrow)
 
     fun tap(key: Key) {
         if (!key.toggle) {
@@ -55,6 +59,17 @@ class Composer {
         cycleKey = null
     }
 
+    /**
+     * ↺/↻ キー: 最後の1文字を循環させる。iOS と同じく、この後に同じキーを押すと
+     * 循環の続きではなく新しい文字になる (↺/↻ 自体は続けて使える)
+     */
+    fun stepByArrow(delta: Int) {
+        if (cycleKey == null) return
+        stepCycle(delta)
+        toggleKey = null
+        steppedByArrow = true
+    }
+
     /** 最後の1文字を元キーの循環で前後に送る */
     fun stepCycle(delta: Int) {
         val k = cycleKey ?: return
@@ -68,6 +83,7 @@ class Composer {
 
     private fun dropCycle() {
         endToggle()
+        steppedByArrow = false
         cycleKey = null
     }
 
@@ -125,6 +141,7 @@ class Composer {
     }
 
     private fun append(s: String) {
+        steppedByArrow = false
         sb.insert(cursor, s)
         cursor += s.length
         lastLen = s.length

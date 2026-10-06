@@ -231,8 +231,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
                 }
                 updateUi()
             }
-            KeyType.TOGGLE_BACK -> edit { if (cycleEnabled()) { composer.stepCycle(-1); afterInput() } }
-            KeyType.TOGGLE_FWD -> edit { if (cycleEnabled()) { composer.stepCycle(+1); afterInput() } }
+            KeyType.TOGGLE_BACK -> edit { if (cycleEnabled()) { composer.stepByArrow(-1); afterInput() } }
+            KeyType.TOGGLE_FWD -> edit { if (cycleEnabled()) { composer.stepByArrow(+1); afterInput() } }
             KeyType.MODE -> edit {
                 composer.endToggle()
                 if (direct) flushDirect()
@@ -451,7 +451,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
 
     /** 数字モードは最後の1文字に常に効く。かな/英字はトグル中のみ */
     private fun cycleEnabled() =
-        selected < 0 && if (keyboard.mode == Mode.NUM) composer.canCycle else composer.isToggling
+        selected < 0 && if (keyboard.mode == Mode.NUM) composer.canCycle else composer.canArrowCycle
 
     private fun updateUi() {
         if (!::keyboard.isInitialized) return
