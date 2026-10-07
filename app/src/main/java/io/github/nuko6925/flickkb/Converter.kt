@@ -74,6 +74,12 @@ class Converter(context: Context) {
             path?.let { add(it.surface, full, learnable = it.segments.size == 1) }
             val ex = exact(reading)
             ex.firstOrNull()?.let { add(it, full) }
+            // 絵文字・顔文字 (すやぁ → ( ˘ω˘)ｽﾔｧ、ねこ → 🐱)。変換の上位の直後に
+            val emo = emoji(reading)
+            if (emo.isNotEmpty()) {
+                ex.drop(1).take(2).forEach { add(it, full) }
+                emo.forEach { add(it, full) }
+            }
             // 学習済みの予測 (例: きょう → 共有)
             learn.predict(reading).forEach { (r, s) -> add(s, full, r = r) }
             user.predict(reading).forEach { (r, s) -> add(s, full, r = r) }
@@ -132,6 +138,25 @@ class Converter(context: Context) {
     }
 
     fun learn(reading: String, surface: String) = learn.record(reading, surface)
+
+    private val glyph = android.graphics.Paint()
+
+    /** 読みに対応する絵文字 (端末で表示できるものだけ) と顔文字 */
+    private fun emoji(r: String): List<String> {
+        val db = dict ?: return emptyList()
+        return runCatching {
+            db.rawQuery("SELECT surface, kind FROM emo WHERE reading=? ORDER BY kind, ord", arrayOf(r)).use { c ->
+                val e = ArrayList<String>()
+                val k = ArrayList<String>()
+                while (c.moveToNext()) {
+                    val s = c.getString(0)
+                    if (c.getInt(1) == 0) { if (e.size < EMO_MAX && glyph.hasGlyph(s)) e.add(s) }
+                    else if (k.size < EMO_MAX) k.add(s)
+                }
+                e + k
+            }
+        }.getOrElse { emptyList() }  // 古い dict.db (emo テーブル無し) でも落ちない
+    }
 
     /** 表記ごとに最小コストで (同じ表記が品詞違いで複数行あるため) */
     private fun exact(r: String): List<String> = query(
@@ -265,6 +290,7 @@ class Converter(context: Context) {
         }
 
         private const val PRED_MARGIN = 500
+        private const val EMO_MAX = 8
         private const val TYPO_MAX_COST = 7000
         private val TYPO_GROUP: Map<Char, String> = buildMap {
             for (g in listOf(

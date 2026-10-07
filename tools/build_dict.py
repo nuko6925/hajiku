@@ -13,6 +13,8 @@ usage:
 import argparse, array, os, re, sqlite3, struct, sys, urllib.request
 
 BASE = "https://raw.githubusercontent.com/google/mozc/master/src/data/dictionary_oss/"
+DATA = "https://raw.githubusercontent.com/google/mozc/master/src/data/"
+KANA = re.compile(r"^[ぁ-ゖー]+$")
 FILES = [f"dictionary{i:02d}.txt" for i in range(10)]
 EN_URL = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_50k.txt"
 EN_WORD = re.compile(r"^[a-z][a-z']*$")
@@ -25,6 +27,59 @@ def read_text(src, name):
     print("fetch", name, file=sys.stderr)
     with urllib.request.urlopen(BASE + name) as r:
         return r.read().decode("utf-8")
+
+
+def read_data(src, rel):
+    """Mozc src/data/ 以下のファイル (emoji/…, emoticon/…)。src は dictionary_oss ディレクトリ"""
+    if src:
+        p = os.path.join(src, "..", rel)
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                return f.read()
+    print("fetch", rel, file=sys.stderr)
+    with urllib.request.urlopen(DATA + rel) as r:
+        return r.read().decode("utf-8")
+
+
+def emo_entries(src):
+    """(よみ, 表記, 種類 0=絵文字 1=顔文字, 並び順)"""
+    out = {}
+
+    def add(reading, surface, kind, order):
+        if KANA.match(reading) and (reading, surface) not in out:
+            out[(reading, surface)] = (kind, order)
+
+    # 絵文字: 符号位置 / 絵文字 / よみ(空白区切り) / … / 説明 / 版
+    for i, ln in enumerate(read_data(src, "emoji/emoji_data.tsv").splitlines()):
+        if ln.startswith("#"):
+            continue
+        p = ln.split("\t")
+        if len(p) < 3:
+            continue
+        # 古い絵文字ほど定番なので先に (よみ一覧は五十音順で重要度の手がかりにならない)。
+        # ZWJ 合成 (家族・カップル等) は後ろへ。選んだものは学習で前に出る
+        try:
+            ver = float(p[-1].lstrip("E"))
+        except ValueError:
+            ver = 99.0
+        rank = (1_000_000 if "\u200d" in p[1] else 0) + int(ver * 10) * 10_000 + i
+        for r in p[2].split():
+            add(r, p[1], 0, rank)
+    # 顔文字: 顔文字 / よみ(空白区切り) / 分類
+    for i, ln in enumerate(read_data(src, "emoticon/emoticon.tsv").splitlines()):
+        p = ln.split("\t")
+        if len(p) < 2 or not p[0] or ln.startswith("#"):
+            continue
+        for r in p[1].split():
+            add(r, p[0], 1, i)
+    # 顔文字 (分類別): 顔文字 / 分類 / よみ(空白区切り)
+    for i, ln in enumerate(read_data(src, "emoticon/categorized.tsv").splitlines()):
+        p = ln.split("\t")
+        if len(p) < 3 or ln.startswith("#"):
+            continue
+        for r in p[2].split():
+            add(r, p[0], 1, 10000 + i)
+    return [(r, s, k, o) for (r, s), (k, o) in out.items()]
 
 
 def en_words(path, limit):
@@ -112,6 +167,12 @@ def main():
     db.execute("CREATE TABLE pos(id INTEGER PRIMARY KEY, func INTEGER NOT NULL)")
     db.executemany("INSERT INTO pos VALUES(?,?)", pos)
     en = en_words(a.en, a.en_limit)
+    emo = emo_entries(a.src)
+    db.execute("""CREATE TABLE emo(
+        reading TEXT NOT NULL, surface TEXT NOT NULL, kind INTEGER NOT NULL, ord INTEGER NOT NULL,
+        PRIMARY KEY(reading, surface)) WITHOUT ROWID""")
+    db.executemany("INSERT INTO emo VALUES(?,?,?,?)", sorted(emo))
+    print(f"{len(emo)} emoji/emoticon readings", file=sys.stderr)
     db.execute("CREATE TABLE en(word TEXT PRIMARY KEY, freq INTEGER NOT NULL) WITHOUT ROWID")
     db.executemany("INSERT INTO en VALUES(?,?)", sorted(en.items()))
     db.execute("CREATE TABLE android_metadata(locale TEXT)")
