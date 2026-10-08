@@ -15,6 +15,9 @@ import argparse, array, os, re, sqlite3, struct, sys, urllib.request
 BASE = "https://raw.githubusercontent.com/google/mozc/master/src/data/dictionary_oss/"
 DATA = "https://raw.githubusercontent.com/google/mozc/master/src/data/"
 KANA = re.compile(r"^[ぁ-ゖー]+$")
+# 濁点・半濁点・小書きを外した「ゆるい読み」(打ち間違い・付け忘れの吸収用)。Converter.kt の FUZZY と同じ表
+FUZZY = str.maketrans("がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽゔぁぃぅぇぉっゃゅょゎ",
+                      "かきくけこさしすせそたちつてとはひふへほはひふへほうあいうえおつやゆよわ")
 FILES = [f"dictionary{i:02d}.txt" for i in range(10)]
 EN_URL = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_50k.txt"
 EN_WORD = re.compile(r"^[a-z][a-z']*$")
@@ -119,6 +122,8 @@ def main():
     ap.add_argument("--src")
     ap.add_argument("--en")
     ap.add_argument("--en-limit", type=int, default=40000)
+    ap.add_argument("--fuzzy-max-cost", type=int, default=7000,
+                    help="ゆるい読みの索引に入れる語のコスト上限 (小さいほど辞書が小さい)")
     ap.add_argument("--out-dir", default=os.path.join(here, "..", "app/src/main/assets"))
     a = ap.parse_args()
     os.makedirs(a.out_dir, exist_ok=True)
@@ -167,6 +172,16 @@ def main():
     db.execute("CREATE TABLE pos(id INTEGER PRIMARY KEY, func INTEGER NOT NULL)")
     db.executemany("INSERT INTO pos VALUES(?,?)", pos)
     en = en_words(a.en, a.en_limit)
+    # ゆるい読み → 本来の読み (よく使う語だけ。2文字以上)
+    minc = {}
+    for (r, _s, _l, _rr), c in best.items():
+        if c < minc.get(r, 1 << 30):
+            minc[r] = c
+    fuzzy = sorted((r.translate(FUZZY), r) for r, c in minc.items()
+                   if c <= a.fuzzy_max_cost and len(r) >= 2 and r.translate(FUZZY) != r)
+    db.execute("CREATE TABLE fuzzy(nreading TEXT NOT NULL, reading TEXT NOT NULL, PRIMARY KEY(nreading, reading)) WITHOUT ROWID")
+    db.executemany("INSERT INTO fuzzy VALUES(?,?)", fuzzy)
+    print(f"{len(fuzzy)} fuzzy readings", file=sys.stderr)
     emo = emo_entries(a.src)
     db.execute("""CREATE TABLE emo(
         reading TEXT NOT NULL, surface TEXT NOT NULL, kind INTEGER NOT NULL, ord INTEGER NOT NULL,

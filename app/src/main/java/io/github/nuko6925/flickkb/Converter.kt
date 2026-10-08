@@ -63,8 +63,11 @@ class Converter(context: Context) {
             learn.lookup(reading).forEach { add(it, full) }
             user.lookup(reading).forEach { add(it, full) }
             val lat = lattice
-            val path = if (full >= 2) lat?.best(reading) else null
+            val paths = if (full >= 2) lat?.nbest(reading, NBEST).orEmpty() else emptyList()
+            val path = paths.firstOrNull()
             val preds = if (full >= 2) predict(reading) else emptyList()
+            // 濁点などの付け忘れを許した予測 (ふらくし → フラグシップ)
+            val fpreds = if (full >= 3) fuzzyPredict(reading) else emptyList()
             // 予測 (ありがと → ありがとう) が文全体の変換より自然ならそちらを先に
             val p0 = preds.firstOrNull()
             if (lat != null && path != null && p0 != null && lat.singleCost(p0.cost, p0.lid, p0.rid) + PRED_MARGIN < path.cost) {
@@ -72,6 +75,12 @@ class Converter(context: Context) {
             }
             // 文全体の変換 (今日はいい天気)。複数文節の文は学習しない
             path?.let { add(it.surface, full, learnable = it.segments.size == 1) }
+            // 文全体の別案 (一人で変える → 一人で帰る / 一人て変える …)。単語1つの時は辞書候補に任せる
+            if (path != null && path.segments.size >= 2) {
+                paths.drop(1).forEach { add(it.surface, full, learnable = false) }
+            }
+            // 普通の予測が無い時は、ゆるい予測を上の方に
+            if (preds.isEmpty()) fpreds.take(3).forEach { add(it.surface, full, r = it.reading) }
             val ex = exact(reading)
             ex.firstOrNull()?.let { add(it, full) }
             // 絵文字・顔文字 (すやぁ → ( ˘ω˘)ｽﾔｧ、ねこ → 🐱)。変換の上位の直後に
@@ -114,6 +123,7 @@ class Converter(context: Context) {
                 }
             }
             preds.forEach { add(it.surface, full, r = it.reading) }
+            fpreds.forEach { add(it.surface, full, r = it.reading) }
             add(toHalfWidth(reading), full)
         } else {
             add(reading, full)
@@ -179,6 +189,24 @@ class Converter(context: Context) {
                 }
             }
         }.getOrElse { emptyList() }
+    }
+
+    /** ゆるい読みの前方一致 (読みが入力そのものから始まる語は通常の予測に任せる) */
+    private fun fuzzyPredict(r: String): List<Pred> {
+        val db = dict ?: return emptyList()
+        return runCatching {
+            val n = Fuzzy.of(r)
+            val reals = db.rawQuery("SELECT reading FROM fuzzy WHERE nreading>=? AND nreading<? LIMIT 200",
+                arrayOf(n, n + '\uFFFF')).use { c ->
+                buildList { while (c.moveToNext()) c.getString(0).takeIf { !it.startsWith(r) }?.let { add(it) } }
+            }
+            if (reals.isEmpty()) return@runCatching emptyList()
+            val q = "SELECT reading, surface, MIN(cost), lid, rid FROM dict WHERE reading IN (" +
+                reals.joinToString(",") { "?" } + ") GROUP BY surface ORDER BY 3 LIMIT 5"
+            db.rawQuery(q, reals.toTypedArray()).use { c ->
+                buildList { while (c.moveToNext()) add(Pred(c.getString(0), c.getString(1), c.getInt(2), c.getInt(3), c.getInt(4))) }
+            }
+        }.getOrElse { emptyList() }  // 古い dict.db (fuzzy テーブル無し) でも落ちない
     }
 
     /**
@@ -291,6 +319,8 @@ class Converter(context: Context) {
 
         private const val PRED_MARGIN = 500
         private const val EMO_MAX = 8
+        /** 文全体の変換案の数 */
+        private const val NBEST = 6
         private const val TYPO_MAX_COST = 7000
         private val TYPO_GROUP: Map<Char, String> = buildMap {
             for (g in listOf(
