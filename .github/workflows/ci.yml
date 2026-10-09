@@ -29,4 +29,11 @@ jobs:
       - name: Build (release, unsigned; lint 込み)
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease
+          set -o pipefail
+          ./gradlew assembleRelease 2>&1 | tee build.log || {
+            # 失敗理由を注釈 (Summary 画面) にも出す
+            grep -E "^e: |error:|Error:|What went wrong|^> " build.log | head -20 | while IFS= read -r l; do
+              echo "::error::${l}"
+            done
+            exit 1
+          }
