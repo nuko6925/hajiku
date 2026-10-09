@@ -32,7 +32,8 @@ jobs:
           set -o pipefail
           ./gradlew assembleRelease 2>&1 | tee build.log || {
             # 失敗理由を注釈 (Summary 画面) にも出す
-            grep -E "^e: |error:|Error:|What went wrong|^> " build.log | head -20 | while IFS= read -r l; do
+            { grep -E "^e: |FAILED$|error:" build.log; grep -A6 "What went wrong" build.log; } \
+              | grep -v "^> Task" | head -10 | while IFS= read -r l; do
               echo "::error::${l}"
             done
             exit 1
