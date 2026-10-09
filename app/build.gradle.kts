@@ -53,4 +53,5 @@ android {
 dependencies {
     // 自動入力のインライン候補の見た目 (InlineSuggestionUi)
     implementation("androidx.autofill:autofill:1.1.0")
+    implementation("androidx.annotation:annotation:1.9.1")
 }
