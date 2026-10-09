@@ -182,10 +182,15 @@ object VaultAuth {
         } else {
             @Suppress("DEPRECATION") b.setDeviceCredentialAllowed(true)
         }
-        b.build().authenticate(CancellationSignal(), activity.mainExecutor, object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = onOk()
-            override fun onAuthenticationError(code: Int, msg: CharSequence) = onFail(msg.toString())
-        })
+        // 端末によって例外になる組み合わせがあるので、落とさずにメッセージにする
+        try {
+            b.build().authenticate(CancellationSignal(), activity.mainExecutor, object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) = onOk()
+                override fun onAuthenticationError(code: Int, msg: CharSequence) = onFail(msg.toString())
+            })
+        } catch (e: Exception) {
+            onFail("認証を開始できませんでした: ${e.message}")
+        }
     }
 }
 
