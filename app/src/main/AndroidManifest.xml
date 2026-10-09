@@ -33,11 +33,13 @@
         <activity
             android:name=".VaultActivity"
             android:label="パスワード"
+            android:windowSoftInputMode="adjustResize"
             android:excludeFromRecents="true"
             android:exported="false" />
 
         <activity
             android:name=".VaultAuthActivity"
+            android:windowSoftInputMode="adjustResize"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true"
             android:exported="false" />

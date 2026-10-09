@@ -33,6 +33,8 @@ data class VaultEntry(
     val pkg: String,
     val username: String,
     val lastUsed: Long,
+    /** 最後にパスワード・ユーザー名・サイトを変えた日時 */
+    val modified: Long = 0,
 ) {
     val title get() = domain.ifEmpty { pkg }
 }
@@ -76,25 +78,31 @@ object VaultCrypto {
     }
 }
 
-class VaultStore private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "vault.db", null, 1) {
+class VaultStore private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "vault.db", null, 2) {
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE entries(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             domain TEXT NOT NULL DEFAULT '', pkg TEXT NOT NULL DEFAULT '',
             username TEXT NOT NULL, secret BLOB NOT NULL,
-            created INTEGER NOT NULL, last_used INTEGER NOT NULL DEFAULT 0)""")
+            created INTEGER NOT NULL, last_used INTEGER NOT NULL DEFAULT 0,
+            modified INTEGER NOT NULL DEFAULT 0)""")
         db.execSQL("CREATE INDEX entries_domain ON entries(domain)")
         db.execSQL("CREATE INDEX entries_pkg ON entries(pkg)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, o: Int, n: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, o: Int, n: Int) {
+        if (o < 2) {
+            db.execSQL("ALTER TABLE entries ADD COLUMN modified INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("UPDATE entries SET modified = created")
+        }
+    }
 
     private fun rows(where: String?, args: Array<String>?): List<VaultEntry> = readableDatabase.query(
-        "entries", arrayOf("id", "domain", "pkg", "username", "last_used"), where, args, null, null,
+        "entries", arrayOf("id", "domain", "pkg", "username", "last_used", "modified"), where, args, null, null,
         "last_used DESC, domain, username"
     ).use { c ->
-        buildList { while (c.moveToNext()) add(VaultEntry(c.getLong(0), c.getString(1), c.getString(2), c.getString(3), c.getLong(4))) }
+        buildList { while (c.moveToNext()) add(VaultEntry(c.getLong(0), c.getString(1), c.getString(2), c.getString(3), c.getLong(4), c.getLong(5))) }
     }
 
     fun all() = rows(null, null)
@@ -124,6 +132,7 @@ class VaultStore private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "vaul
             arrayOf(d, pkg, username), null, null, null).use { if (it.moveToNext()) it.getLong(0) else null }
         val cv = ContentValues().apply {
             put("domain", d); put("pkg", pkg); put("username", username); put("secret", secret)
+            put("modified", System.currentTimeMillis())
         }
         return if (existing != null) {
             db.update("entries", cv, "id=?", arrayOf(existing.toString())); existing
@@ -136,9 +145,11 @@ class VaultStore private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "vaul
     fun update(id: Long, domain: String, pkg: String, username: String, password: String) {
         writableDatabase.update("entries", ContentValues().apply {
             put("domain", normalizeDomain(domain)); put("pkg", pkg); put("username", username)
-            put("secret", VaultCrypto.encrypt(password))
+            put("secret", VaultCrypto.encrypt(password)); put("modified", System.currentTimeMillis())
         }, "id=?", arrayOf(id.toString()))
     }
+
+    fun get(id: Long): VaultEntry? = rows("id=?", arrayOf(id.toString())).firstOrNull()
 
     fun delete(id: Long) { writableDatabase.delete("entries", "id=?", arrayOf(id.toString())) }
 
