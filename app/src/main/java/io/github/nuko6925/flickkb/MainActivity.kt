@@ -43,6 +43,21 @@ class MainActivity : Activity() {
                 }
             })
             addView(Button(this@MainActivity).apply {
+                text = "診断ログ"
+                setOnClickListener {
+                    Diag.init(this@MainActivity)
+                    val log = Diag.read()
+                    android.app.AlertDialog.Builder(this@MainActivity).setTitle("診断ログ")
+                        .setMessage(log)
+                        .setPositiveButton("コピー") { _, _ ->
+                            getSystemService(android.content.ClipboardManager::class.java)
+                                ?.setPrimaryClip(android.content.ClipData.newPlainText("diag", log))
+                        }
+                        .setNeutralButton("消去") { _, _ -> Diag.clear() }
+                        .setNegativeButton("閉じる", null).show()
+                }
+            })
+            addView(Button(this@MainActivity).apply {
                 text = "ライセンス"
                 setOnClickListener { startActivity(Intent(this@MainActivity, LicensesActivity::class.java)) }
             })

@@ -44,6 +44,8 @@ class VaultActivity : Activity() {
         super.onCreate(savedInstanceState)
         // 一覧はスクショ・最近使ったアプリのサムネイルに写さない
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        Diag.init(this)
+        Diag.log("vault: 起動 pick=${intent.getBooleanExtra(EXTRA_PICK, false)}")
         title = "パスワード"
         store = VaultStore.get(this)
         pick = intent.getBooleanExtra(EXTRA_PICK, false)
@@ -58,6 +60,7 @@ class VaultActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
+        Diag.log("vault: onStop away=$away")
         if (away) return
         // 離れたら鍵をかける。選択モードは閉じる
         unlocked = false
@@ -69,7 +72,7 @@ class VaultActivity : Activity() {
         away = true
         VaultAuth.authenticate(this, "パスワードを表示",
             onOk = { away = false; unlocked = true; reload() },
-            onFail = { msg -> away = false; msg?.let { toast(it) }; finish() })
+            onFail = { msg -> away = false; Diag.log("vault: 認証失敗 $msg"); msg?.let { toast(it) }; finish() })
     }
 
     /** 認証が切れていたら (60 秒経過) もう一度認証してから実行 */

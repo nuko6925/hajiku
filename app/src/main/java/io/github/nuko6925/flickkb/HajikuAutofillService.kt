@@ -31,6 +31,8 @@ class LoginFields(
     val pkg: String,
     val usernameValue: String?,
     val passwordValue: String?,
+    /** 信用しなかったものも含めた申告ドメイン (診断用) */
+    val rawDomain: String? = null,
 )
 
 /** Web サイトの申告 (webDomain) を信用するブラウザ。それ以外のアプリはパッケージ名で照合 */
@@ -92,16 +94,25 @@ object LoginParser {
             domain?.takeIf { trustWebDomain(pkg) }, pkg,
             user?.autofillValue?.takeIf { it.isText }?.textValue?.toString(),
             pass?.autofillValue?.takeIf { it.isText }?.textValue?.toString(),
+            domain,
         )
     }
 }
 
 class HajikuAutofillService : AutofillService() {
 
+    override fun onCreate() {
+        super.onCreate()
+        Diag.init(this)
+    }
+
+    override fun onConnected() { Diag.log("autofill: サービス接続") }
+
     override fun onFillRequest(request: FillRequest, cancel: CancellationSignal, callback: FillCallback) {
         val structure = request.fillContexts.lastOrNull()?.structure ?: return callback.onSuccess(null)
         val f = LoginParser.parse(structure)
         val ids = listOfNotNull(f.username, f.password)
+        Diag.log("fill: pkg=${f.pkg} domain=${f.rawDomain}(信用=${f.domain != null}) user欄=${f.username != null} pass欄=${f.password != null}")
         if (ids.isEmpty() || f.pkg == packageName) return callback.onSuccess(null)
 
         val entries = VaultStore.get(this).matching(f.domain, f.pkg)
@@ -132,14 +143,16 @@ class HajikuAutofillService : AutofillService() {
             val type = SaveInfo.SAVE_DATA_TYPE_PASSWORD or (if (f.username != null) SaveInfo.SAVE_DATA_TYPE_USERNAME else 0)
             resp.setSaveInfo(SaveInfo.Builder(type, ids.toTypedArray()).build())
         }
+        Diag.log("fill: 一致=${entries.size} インライン枠=$maxInline spec=${specs.size}")
         if (entries.isEmpty() && f.password == null) return callback.onSuccess(null)
-        callback.onSuccess(runCatching { resp.build() }.getOrNull())
+        callback.onSuccess(runCatching { resp.build() }.onFailure { Diag.log("fill: 応答作成失敗 $it") }.getOrNull())
     }
 
     override fun onSaveRequest(request: SaveRequest, callback: SaveCallback) {
         val structure = request.fillContexts.lastOrNull()?.structure ?: return callback.onSuccess()
         val f = LoginParser.parse(structure)
         val pw = f.passwordValue
+        Diag.log("save: pkg=${f.pkg} domain=${f.domain} パスワード値=${!pw.isNullOrEmpty()}")
         if (pw.isNullOrEmpty()) return callback.onSuccess()
         // 暗号化には認証が必要なので、認証画面で保存する
         val i = VaultAuthActivity.saveIntent(this, f.domain.orEmpty(), if (f.domain == null) f.pkg else "", f.usernameValue.orEmpty(), pw)
@@ -155,7 +168,10 @@ class HajikuAutofillService : AutofillService() {
     private fun inline(spec: InlinePresentationSpec, title: String, sub: String?): InlinePresentation? {
         if (Build.VERSION.SDK_INT < 30) return null
         val style = spec.style
-        if (!UiVersions.getVersions(style).contains(UiVersions.INLINE_UI_VERSION_1)) return null
+        if (!UiVersions.getVersions(style).contains(UiVersions.INLINE_UI_VERSION_1)) {
+            Diag.log("fill: IME のインライン様式が非対応 ${UiVersions.getVersions(style)}")
+            return null
+        }
         val attribution = PendingIntent.getActivity(this, 0, Intent(this, VaultActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE)
         val content = InlineSuggestionUi.newContentBuilder(attribution).setTitle(title)

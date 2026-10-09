@@ -76,6 +76,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
 
     override fun onCreate() {
         super.onCreate()
+        Diag.init(this)
         converter = Converter(applicationContext)
     }
 
@@ -212,12 +213,14 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         val h = (36 * dp).toInt()
         val spec = InlinePresentationSpec.Builder(Size((60 * dp).toInt(), h), Size((280 * dp).toInt(), h))
             .setStyle(styles).build()
+        Diag.log("ime: インライン候補を要求 (${currentInputEditorInfo?.packageName})")
         return InlineSuggestionsRequest.Builder(listOf(spec)).setMaxSuggestionCount(4).build()
     }
 
     @RequiresApi(Build.VERSION_CODES.R)
     override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
         val list = response.inlineSuggestions
+        Diag.log("ime: インライン候補 ${list.size} 件 (固定 ${list.count { it.info.isPinned }})")
         val gen = ++inlineGen
         if (list.isEmpty()) {
             setInline(emptyList(), emptyList())
@@ -264,8 +267,10 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         val intent = other ?: Intent(this, VaultActivity::class.java)
             .putExtra(VaultActivity.EXTRA_PICK, true)
             .putExtra(VaultActivity.EXTRA_PKG, currentInputEditorInfo?.packageName)
+        Diag.log("ime: 🔑 サービス=$svc → ${intent.component?.className ?: intent.`package`}")
         runCatching { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-            .onFailure { autofillBar.showMessage("開けませんでした") }
+            .onSuccess { Diag.log("ime: 🔑 startActivity 呼び出し成功") }
+            .onFailure { Diag.log("ime: 🔑 失敗 $it"); autofillBar.showMessage("開けませんでした") }
     }
 
     // ---- 🔑 で選んだアカウントの入力 ----
