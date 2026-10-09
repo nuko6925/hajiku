@@ -111,12 +111,15 @@ class AutofillBarView(context: Context, onKey: () -> Unit) : LinearLayout(contex
      * keys: Hajiku の「その他のパスワード」(🔑) → 🔑 の位置に置く。
      * 他サービスの固定候補 (pinned) は候補の後ろに並べる
      */
-    fun setSuggestions(views: List<View>, pinned: List<View> = emptyList(), keys: List<View> = emptyList()) {
+    fun setSuggestions(
+        views: List<View>, pinned: List<View> = emptyList(), keys: List<View> = emptyList(), keyWidth: Int = 0,
+    ) {
         right.removeAllViews()
         if (keys.isNotEmpty()) {
             keys.forEach { v ->
                 (v.parent as? ViewGroup)?.removeView(v)
-                right.addView(v, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+                // 幅を明示する (候補の部品は WRAP_CONTENT だと使える幅いっぱいに広がり、真ん中の候補欄を潰す)
+                right.addView(v, LayoutParams(if (keyWidth > 0) keyWidth else (48 * dp).toInt(), LayoutParams.WRAP_CONTENT).apply {
                     gravity = Gravity.CENTER_VERTICAL
                     setMargins(0, 0, (4 * dp).toInt(), 0)
                 })

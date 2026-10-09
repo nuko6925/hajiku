@@ -267,7 +267,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         inlineViews = views
         pinnedViews = pinned + keys
         if (::autofillBar.isInitialized) {
-            autofillBar.setSuggestions(views, pinned, keys)
+            autofillBar.setSuggestions(views, pinned, keys, keySpecWidth)
             updateUi()
         }
     }
