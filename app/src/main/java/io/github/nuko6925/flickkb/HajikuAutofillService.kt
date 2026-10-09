@@ -120,7 +120,8 @@ class HajikuAutofillService : AutofillService() {
         val entries = VaultStore.get(this).matching(f.domain, f.pkg)
         val resp = FillResponse.Builder()
         val specs = if (Build.VERSION.SDK_INT >= 30) request.inlineSuggestionsRequest?.inlinePresentationSpecs.orEmpty() else emptyList()
-        val maxInline = if (Build.VERSION.SDK_INT >= 30) request.inlineSuggestionsRequest?.maxSuggestionCount ?: 0 else 0
+        // 最後の 1 枠は 🔑 用に空けておく
+        val maxInline = if (Build.VERSION.SDK_INT >= 30) ((request.inlineSuggestionsRequest?.maxSuggestionCount ?: 0) - 1).coerceAtLeast(0) else 0
 
         // 前回使ったアカウントが先頭 (VaultStore が last_used 順で返す)
         entries.take(MAX_DATASETS).forEachIndexed { i, e ->
@@ -128,7 +129,7 @@ class HajikuAutofillService : AutofillService() {
             val label = e.username.ifEmpty { "(ユーザー名なし)" }
             val rv = remote(label, e.title)
             val inline = if (Build.VERSION.SDK_INT >= 30 && i < maxInline && specs.isNotEmpty())
-                inline(specs[minOf(i, specs.size - 1)], label, null) else null
+                inline(specs.first(), label, null) else null
             val ds = Dataset.Builder(rv).setAuthentication(auth.intentSender)
             for (id in ids) {
                 if (inline != null && Build.VERSION.SDK_INT >= 30) {

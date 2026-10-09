@@ -189,7 +189,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
         inlineGen++
-        setInline(emptyList(), emptyList())
+        setInline(emptyList(), emptyList(), emptyList())
         currentInputConnection?.finishComposingText()
         reset()
     }
@@ -213,17 +213,24 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         val h = (36 * dp).toInt()
         val spec = InlinePresentationSpec.Builder(Size((60 * dp).toInt(), h), Size((280 * dp).toInt(), h))
             .setStyle(styles).build()
+        // 最後の枠は 🔑 専用 (幅で見分ける)。Hajiku の自動入力サービスは 🔑 にこの枠を使う
+        keySpecWidth = (KEY_SPEC_DP * dp).toInt()
+        val keySpec = InlinePresentationSpec.Builder(Size((32 * dp).toInt(), h), Size(keySpecWidth, h))
+            .setStyle(styles).build()
         Diag.log("ime: インライン候補を要求 (${currentInputEditorInfo?.packageName})")
-        return InlineSuggestionsRequest.Builder(listOf(spec)).setMaxSuggestionCount(4).build()
+        return InlineSuggestionsRequest.Builder(listOf(spec, spec, spec, spec, keySpec))
+            .setMaxSuggestionCount(5).build()
     }
 
     @RequiresApi(Build.VERSION_CODES.R)
     override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
         val list = response.inlineSuggestions
-        Diag.log("ime: インライン候補 ${list.size} 件 (固定 ${list.count { it.info.isPinned }})")
+        Diag.log("ime: インライン候補 ${list.size} 件 " + list.joinToString(" ") {
+            "[pin=${it.info.isPinned} type=${it.info.type} w=${it.info.inlinePresentationSpec.maxSize.width}]"
+        })
         val gen = ++inlineGen
         if (list.isEmpty()) {
-            setInline(emptyList(), emptyList())
+            setInline(emptyList(), emptyList(), emptyList())
             return true
         }
         val views = arrayOfNulls<View>(list.size)
@@ -235,22 +242,32 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
                 if (--remaining == 0 && gen == inlineGen) {
                     val normal = ArrayList<View>()
                     val pinned = ArrayList<View>()
+                    val keys = ArrayList<View>()
+                    val ours = HajikuAutofillService.isSelected(this)
                     list.forEachIndexed { j, sug ->
                         val view = views[j] ?: return@forEachIndexed
-                        if (sug.info.isPinned) pinned.add(view) else normal.add(view)
+                        when {
+                            // 🔑 専用枠で描かれた Hajiku の「その他のパスワード」
+                            ours && sug.info.inlinePresentationSpec.maxSize.width == keySpecWidth -> keys.add(view)
+                            sug.info.isPinned -> pinned.add(view)
+                            else -> normal.add(view)
+                        }
                     }
-                    setInline(normal, pinned)
+                    setInline(normal, pinned, keys)
                 }
             }
         }
         return true
     }
 
-    private fun setInline(views: List<View>, pinned: List<View>) {
+    /** 🔑 専用枠の幅 (px)。Hajiku の 🔑 チップの見分けに使う */
+    private var keySpecWidth = -1
+
+    private fun setInline(views: List<View>, pinned: List<View>, keys: List<View>) {
         inlineViews = views
-        pinnedViews = pinned
+        pinnedViews = pinned + keys
         if (::autofillBar.isInitialized) {
-            autofillBar.setSuggestions(views, pinned, HajikuAutofillService.isSelected(this))
+            autofillBar.setSuggestions(views, pinned, keys)
             updateUi()
         }
     }
@@ -671,5 +688,6 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
 
     companion object {
         private const val TOGGLE_TIMEOUT_MS = 750L
+        private const val KEY_SPEC_DP = 52
     }
 }

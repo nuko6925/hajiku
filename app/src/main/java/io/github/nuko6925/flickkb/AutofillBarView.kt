@@ -108,13 +108,13 @@ class AutofillBarView(context: Context, onKey: () -> Unit) : LinearLayout(contex
 
     /**
      * 🔑 は常に右端。
-     * pinnedAsKey: Hajiku 自身の固定候補 (= 🔑「その他のパスワード」) を 🔑 の位置に置く。
-     * 他サービスの固定候補は候補の後ろに並べる
+     * keys: Hajiku の「その他のパスワード」(🔑) → 🔑 の位置に置く。
+     * 他サービスの固定候補 (pinned) は候補の後ろに並べる
      */
-    fun setSuggestions(views: List<View>, pinned: List<View> = emptyList(), pinnedAsKey: Boolean = false) {
+    fun setSuggestions(views: List<View>, pinned: List<View> = emptyList(), keys: List<View> = emptyList()) {
         right.removeAllViews()
-        if (pinnedAsKey && pinned.isNotEmpty()) {
-            pinned.forEach { v ->
+        if (keys.isNotEmpty()) {
+            keys.forEach { v ->
                 (v.parent as? ViewGroup)?.removeView(v)
                 right.addView(v, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
                     gravity = Gravity.CENTER_VERTICAL
@@ -125,7 +125,7 @@ class AutofillBarView(context: Context, onKey: () -> Unit) : LinearLayout(contex
             right.addView(key, LayoutParams((48 * dp).toInt(), LayoutParams.MATCH_PARENT))
         }
         row.removeAllViews()
-        for (v in if (pinnedAsKey) views else views + pinned) {
+        for (v in views + pinned) {
             (v.parent as? ViewGroup)?.removeView(v)
             row.addView(v, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER_VERTICAL
