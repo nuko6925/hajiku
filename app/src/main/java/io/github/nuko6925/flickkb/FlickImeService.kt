@@ -16,7 +16,6 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InlineSuggestionsRequest
 import android.view.inputmethod.InlineSuggestionsResponse
-import android.widget.Toast
 import android.widget.inline.InlinePresentationSpec
 import androidx.annotation.RequiresApi
 import androidx.autofill.inline.UiVersions
@@ -45,6 +44,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     /** 🔑 を出す欄 (パスワード・メール・ユーザー名らしい欄) */
     private var loginField = false
     private var inlineViews: List<View> = emptyList()
+    /** サービスが固定表示を求めた候補 (Google の「パスワード」= 他のパスワードを選ぶ画面を開く等) */
+    private var pinnedViews: List<View> = emptyList()
     private var inlineGen = 0
     /** QWERTY のシフト: 0 = オフ, 1 = 次の1文字, 2 = ロック */
     private var shift = 0
@@ -185,7 +186,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
         inlineGen++
-        setInline(emptyList())
+        setInline(emptyList(), emptyList())
         currentInputConnection?.finishComposingText()
         reset()
     }
@@ -217,7 +218,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         val list = response.inlineSuggestions
         val gen = ++inlineGen
         if (list.isEmpty()) {
-            setInline(emptyList())
+            setInline(emptyList(), emptyList())
             return true
         }
         val views = arrayOfNulls<View>(list.size)
@@ -226,16 +227,25 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         list.forEachIndexed { i, s ->
             s.inflate(this, size, mainExecutor) { v ->
                 views[i] = v
-                if (--remaining == 0 && gen == inlineGen) setInline(views.filterNotNull())
+                if (--remaining == 0 && gen == inlineGen) {
+                    val normal = ArrayList<View>()
+                    val pinned = ArrayList<View>()
+                    list.forEachIndexed { j, sug ->
+                        val view = views[j] ?: return@forEachIndexed
+                        if (sug.info.isPinned) pinned.add(view) else normal.add(view)
+                    }
+                    setInline(normal, pinned)
+                }
             }
         }
         return true
     }
 
-    private fun setInline(views: List<View>) {
+    private fun setInline(views: List<View>, pinned: List<View>) {
         inlineViews = views
+        pinnedViews = pinned
         if (::autofillBar.isInitialized) {
-            autofillBar.setSuggestions(views)
+            autofillBar.setSuggestions(views, pinned)
             updateUi()
         }
     }
@@ -244,12 +254,21 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     private fun openPasswordManager() {
         val pkg = android.provider.Settings.Secure.getString(contentResolver, "autofill_service")
             ?.substringBefore('/')
-        val intent = pkg?.let { packageManager.getLaunchIntentForPackage(it) }
-        if (intent == null) {
-            Toast.makeText(this, "自動入力サービスが設定されていません（設定 → パスワードとアカウント）", Toast.LENGTH_LONG).show()
-            return
+        val intent = when {
+            pkg == null -> null
+            // Google はアプリとしてのランチャーが無いので、端末のパスワードマネージャー画面へ
+            pkg == "com.google.android.gms" -> Intent()
+                .setClassName(pkg, "com.google.android.gms.credential.manager.PasswordManagerActivity")
+                .takeIf { it.resolveActivity(packageManager) != null }
+            else -> packageManager.getLaunchIntentForPackage(pkg)
         }
-        startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        // トーストを出さない端末があるので、バー上に文言を出す
+        when {
+            pkg == null -> autofillBar.showMessage("自動入力サービスが未設定です（設定 → パスワードとアカウント）")
+            intent == null -> autofillBar.showMessage("このサービスは開けません。候補の右端から選んでください")
+            else -> runCatching { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                .onFailure { autofillBar.showMessage("開けませんでした") }
+        }
     }
 
     private fun reset() {
@@ -600,7 +619,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         )
         candBar.set(cands, selected)
         // 何も入力していない時は自動入力バー (インライン候補 + 🔑)
-        val showAutofill = cands.isEmpty() && (inlineViews.isNotEmpty() || loginField)
+        val showAutofill = cands.isEmpty() && (inlineViews.isNotEmpty() || pinnedViews.isNotEmpty() || loginField)
         autofillBar.visibility = if (showAutofill) View.VISIBLE else View.GONE
         candBar.visibility = if (showAutofill) View.INVISIBLE else View.VISIBLE
         if (candPanel.visibility == View.VISIBLE) {

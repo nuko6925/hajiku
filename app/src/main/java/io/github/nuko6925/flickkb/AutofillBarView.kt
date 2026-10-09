@@ -58,25 +58,65 @@ class AutofillBarView(context: Context, onKey: () -> Unit) : LinearLayout(contex
     }
     private val divider = View(context)
     private val key = KeyIconView(context).apply { setOnClickListener { onKey() } }
+    /** 右端: サービスが固定表示を求める候補 (Google の「パスワード」など) があればそれ、無ければ 🔑 */
+    private val right = LinearLayout(context).apply {
+        orientation = HORIZONTAL
+        gravity = Gravity.CENTER
+    }
+    private val message = android.widget.TextView(context).apply {
+        gravity = Gravity.CENTER
+        textSize = 13f
+        visibility = GONE
+    }
 
     var theme = KbTheme(false)
         set(v) {
             field = v
             divider.setBackgroundColor(v.separator)
             key.color = v.text
+            message.setTextColor(v.text)
         }
 
     init {
         orientation = HORIZONTAL
         scroll.addView(row, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        addView(scroll, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f))
+        val center = FrameLayout(context).apply {
+            addView(scroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(message, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
+        addView(center, LayoutParams(0, LayoutParams.MATCH_PARENT, 1f))
         addView(divider, LayoutParams((1 * dp).toInt().coerceAtLeast(1), LayoutParams.MATCH_PARENT).apply {
             setMargins(0, (8 * dp).toInt(), 0, (8 * dp).toInt())
         })
-        addView(key, LayoutParams((48 * dp).toInt(), LayoutParams.MATCH_PARENT))
+        right.addView(key, LayoutParams((48 * dp).toInt(), LayoutParams.MATCH_PARENT))
+        addView(right, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT))
     }
 
-    fun setSuggestions(views: List<View>) {
+    /** 候補の代わりに一時的に文言を出す (トーストが出ない端末向け) */
+    fun showMessage(text: String) {
+        message.text = text
+        message.visibility = VISIBLE
+        scroll.visibility = INVISIBLE
+        removeCallbacks(hideMessage)
+        postDelayed(hideMessage, 3500)
+    }
+
+    private val hideMessage = Runnable {
+        message.visibility = GONE
+        scroll.visibility = VISIBLE
+    }
+
+    fun setSuggestions(views: List<View>, pinned: List<View> = emptyList()) {
+        right.removeAllViews()
+        if (pinned.isEmpty()) {
+            right.addView(key, LayoutParams((48 * dp).toInt(), LayoutParams.MATCH_PARENT))
+        } else for (v in pinned) {
+            (v.parent as? ViewGroup)?.removeView(v)
+            right.addView(v, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setMargins((4 * dp).toInt(), 0, (8 * dp).toInt(), 0)
+            })
+        }
         row.removeAllViews()
         for (v in views) {
             (v.parent as? ViewGroup)?.removeView(v)

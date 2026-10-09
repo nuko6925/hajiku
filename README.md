@@ -58,6 +58,11 @@ python3 tools/build_dict.py   # 辞書を生成 (app/src/main/assets/dict.db, co
 | `EmojiPanelView.kt` | 絵文字パネル |
 | `tools/build_dict.py` | 辞書データの生成 |
 
+## 既知の問題
+
+- 一部の中国メーカー端末(Honor / Huawei / Xiaomi など)では、パスワード欄で OS 標準の「セキュリティキーボード」が優先され、Hajiku のパスワード関連機能(QWERTY・自動入力の候補)が使われません。端末の設定でセキュリティキーボードをオフにしてください。
+- Brave(Android)は外部の自動入力サービスの候補が出にくい不具合があります(Brave の設定 → 自動入力サービス → 別のサービスを使用して自動入力)。
+
 ## 未実装
 
 - 文節区切りの手動変更
