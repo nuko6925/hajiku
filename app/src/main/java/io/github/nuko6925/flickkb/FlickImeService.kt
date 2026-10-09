@@ -1,13 +1,28 @@
 package io.github.nuko6925.flickkb
 
 import android.content.res.Configuration
+import android.content.Intent
+import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
+import android.os.Bundle
+import android.util.Size
 import android.view.KeyEvent
+import android.view.ViewGroup
+import android.view.WindowManager
+import android.view.inputmethod.InlineSuggestionsRequest
+import android.view.inputmethod.InlineSuggestionsResponse
+import android.widget.Toast
+import android.widget.inline.InlinePresentationSpec
+import androidx.annotation.RequiresApi
+import androidx.autofill.inline.UiVersions
+import androidx.autofill.inline.common.TextViewStyle
+import androidx.autofill.inline.common.ViewStyle
+import androidx.autofill.inline.v1.InlineSuggestionUi
 import android.view.RoundedCorner
 import android.view.View
 import android.view.WindowInsets
@@ -22,6 +37,18 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     private lateinit var candBar: CandidateBarView
     private lateinit var emojiPanel: EmojiPanelView
     private lateinit var candPanel: CandidatePanelView
+    private lateinit var autofillBar: AutofillBarView
+
+    // ---- パスワード欄・自動入力 ----
+    /** 文字のパスワード欄 (QWERTY + スクショ禁止) */
+    private var passwordField = false
+    /** 🔑 を出す欄 (パスワード・メール・ユーザー名らしい欄) */
+    private var loginField = false
+    private var inlineViews: List<View> = emptyList()
+    private var inlineGen = 0
+    /** QWERTY のシフト: 0 = オフ, 1 = 次の1文字, 2 = ロック */
+    private var shift = 0
+    private var lastShiftTap = 0L
     private lateinit var kbContainer: LinearLayout
     private lateinit var root: FrameLayout
     private lateinit var converter: Converter
@@ -60,12 +87,18 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         candPanel = CandidatePanelView(this, { i -> showCandPanel(false); commitCandidate(i) }, { showCandPanel(false) })
             .apply { visibility = View.GONE }
         keyboard = KeyboardView(this, this)
+        autofillBar = AutofillBarView(this) { openPasswordManager() }.apply { visibility = View.GONE }
+        // 候補バーと自動入力バーは同じ場所を切り替えて使う
+        val barSlot = FrameLayout(this).apply {
+            addView(candBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(autofillBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        }
         emojiPanel = EmojiPanelView(this, this).apply { visibility = View.GONE }
         kbContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false   // 上段フリックのポップアップを候補バー上に描くため
             clipToPadding = false
-            addView(candBar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (40 * dp).toInt()))
+            addView(barSlot, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (40 * dp).toInt()))
             addView(keyboard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
         root = FrameLayout(this).apply {
@@ -101,6 +134,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         candBar.theme = t
         emojiPanel.theme = t
         candPanel.theme = t
+        autofillBar.theme = t
         panelBg.setColor(t.bg)
         panelBg.cornerRadii = radii()
         root.background = panelBg
@@ -125,11 +159,23 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_URI,
         )
+        passwordField = cls == InputType.TYPE_CLASS_TEXT && password
+        loginField = passwordField || variation in setOf(
+            InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+            InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
+        )
+        shift = 0
         keyboard.mode = when {
             cls == InputType.TYPE_CLASS_NUMBER || cls == InputType.TYPE_CLASS_PHONE ||
                 cls == InputType.TYPE_CLASS_DATETIME -> Mode.NUM
-            cls == InputType.TYPE_CLASS_TEXT && (password || alphaVariation) -> Mode.ALPHA
+            passwordField -> Mode.QWERTY  // iOS と同じくパスワード欄は QWERTY
+            cls == InputType.TYPE_CLASS_TEXT && alphaVariation -> Mode.ALPHA
             else -> Mode.KANA
+        }
+        // パスワード入力中はキーボードをスクショ・画面録画に写さない
+        window?.window?.let { w ->
+            if (password) w.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            else w.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         }
         direct = password || cls != InputType.TYPE_CLASS_TEXT || info.inputType == InputType.TYPE_NULL
         noLearn = password || (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
@@ -138,8 +184,72 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
+        inlineGen++
+        setInline(emptyList())
         currentInputConnection?.finishComposingText()
         reset()
+    }
+
+    // ---- 自動入力 (インライン候補) ----
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle): InlineSuggestionsRequest {
+        val dp = resources.displayMetrics.density
+        val t = KbTheme(isDark())
+        // iOS と同じく枠なしの文字だけ
+        val style = InlineSuggestionUi.newStyleBuilder()
+            .setChipStyle(ViewStyle.Builder()
+                .setBackgroundColor(Color.TRANSPARENT)
+                .setPadding((12 * dp).toInt(), 0, (12 * dp).toInt(), 0)
+                .build())
+            .setTitleStyle(TextViewStyle.Builder().setTextColor(t.text).setTextSize(16f).build())
+            .setSubtitleStyle(TextViewStyle.Builder().setTextColor(t.disabled).setTextSize(12f).build())
+            .build()
+        val styles = UiVersions.newStylesBuilder().addStyle(style).build()
+        val h = (36 * dp).toInt()
+        val spec = InlinePresentationSpec.Builder(Size((60 * dp).toInt(), h), Size((280 * dp).toInt(), h))
+            .setStyle(styles).build()
+        return InlineSuggestionsRequest.Builder(listOf(spec)).setMaxSuggestionCount(4).build()
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
+        val list = response.inlineSuggestions
+        val gen = ++inlineGen
+        if (list.isEmpty()) {
+            setInline(emptyList())
+            return true
+        }
+        val views = arrayOfNulls<View>(list.size)
+        var remaining = list.size
+        val size = Size(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        list.forEachIndexed { i, s ->
+            s.inflate(this, size, mainExecutor) { v ->
+                views[i] = v
+                if (--remaining == 0 && gen == inlineGen) setInline(views.filterNotNull())
+            }
+        }
+        return true
+    }
+
+    private fun setInline(views: List<View>) {
+        inlineViews = views
+        if (::autofillBar.isInitialized) {
+            autofillBar.setSuggestions(views)
+            updateUi()
+        }
+    }
+
+    /** 🔑: 今選ばれている自動入力サービスのアプリを開く */
+    private fun openPasswordManager() {
+        val pkg = android.provider.Settings.Secure.getString(contentResolver, "autofill_service")
+            ?.substringBefore('/')
+        val intent = pkg?.let { packageManager.getLaunchIntentForPackage(it) }
+        if (intent == null) {
+            Toast.makeText(this, "自動入力サービスが設定されていません（設定 → パスワードとアカウント）", Toast.LENGTH_LONG).show()
+            return
+        }
+        startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
     private fun reset() {
@@ -190,6 +300,17 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     // ---- KeyboardView.Listener ----
 
     override fun onCharTap(key: Key) = edit {
+        if (keyboard.mode.isQwerty) {
+            // QWERTY は1打1文字。シフトは1文字だけ (ロック中は継続)
+            if (selected >= 0) commitSelectedInBatch()
+            flushDirect()
+            val s = if (shift > 0) key.cycle[0].uppercase() else key.cycle[0]
+            if (shift == 1) shift = 0
+            composer.insert(s)
+            if (direct) flushDirect()
+            afterInput()
+            return@edit
+        }
         if (selected >= 0) commitSelectedInBatch()
         if (direct && composer.toggleKey !== key) flushDirect()
         composer.tap(key)
@@ -284,6 +405,17 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
                 }
             }
             KeyType.EMOJI -> showEmoji(true)
+            KeyType.SHIFT -> {
+                val now = System.currentTimeMillis()
+                shift = when {
+                    shift == 0 && now - lastShiftTap < 350 -> 2  // ダブルタップでロック
+                    shift == 0 -> 1
+                    shift == 1 && now - lastShiftTap < 350 -> 2
+                    else -> 0
+                }
+                lastShiftTap = now
+                updateUi()
+            }
             KeyType.CHAR -> {}
         }
     }
@@ -334,6 +466,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
                 Mode.KANA -> "あいう"
                 Mode.ALPHA -> "ABC"
                 Mode.NUM -> "☆123"
+                Mode.QWERTY -> "ABC"
+                Mode.QWERTY_NUM, Mode.QWERTY_SYM -> "123"
             }
             emojiPanel.show(EmojiRecents.get(this))
             emojiPanel.visibility = View.VISIBLE
@@ -462,8 +596,13 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             cycleEnabled = cycleEnabled(),
             modifiable = keyboard.mode == Mode.KANA && selected < 0 &&
                 composer.lastChar()?.let { KanaModifier.next(it) } != null,
+            shift = shift,
         )
         candBar.set(cands, selected)
+        // 何も入力していない時は自動入力バー (インライン候補 + 🔑)
+        val showAutofill = cands.isEmpty() && (inlineViews.isNotEmpty() || loginField)
+        autofillBar.visibility = if (showAutofill) View.VISIBLE else View.GONE
+        candBar.visibility = if (showAutofill) View.INVISIBLE else View.VISIBLE
         if (candPanel.visibility == View.VISIBLE) {
             if (cands.isEmpty()) showCandPanel(false) else candPanel.set(cands, selected)
         }

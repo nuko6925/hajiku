@@ -19,8 +19,8 @@ android {
         applicationId = "io.github.nuko6925.flickkb"
         minSdk = 29
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.4.2"
+        versionCode = 9
+        versionName = "0.5.0"
     }
 
     signingConfigs {
@@ -48,4 +48,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+}
+
+dependencies {
+    // 自動入力のインライン候補の見た目 (InlineSuggestionUi)
+    implementation("androidx.autofill:autofill:1.1.0")
 }

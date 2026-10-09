@@ -24,6 +24,8 @@ data class UiState(
     val cycleEnabled: Boolean = false,
     /** 小゛゜ が効く文字が末尾にある */
     val modifiable: Boolean = false,
+    /** QWERTY のシフト: 0 = オフ, 1 = 次の1文字, 2 = ロック */
+    val shift: Int = 0,
 )
 
 class KbTheme(dark: Boolean) {
@@ -57,7 +59,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         set(v) { field = v; invalidate() }
 
     var mode: Mode = Mode.KANA
-        set(v) { field = v; keys = Layouts.of(v); layoutKeys(); invalidate() }
+        set(v) { field = v; keys = Layouts.of(v); cols = Layouts.cols(v); layoutKeys(); invalidate() }
+
+    /** 現在の配列の横マス数 (フリック 5 / QWERTY 20) */
+    private var cols = 5
 
     var state = UiState()
         set(v) { if (field != v) { field = v; invalidate() } }
@@ -112,9 +117,11 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 rects[k] = RectF(cx - s, cy - s, cx + s, cy + s)
                 continue
             }
-            val l = margin + k.col * (keyW + gap)
+            // 1マスの幅。キーの高さはフリック配列 (5列) と共通にして、切り替えても高さが変わらないように
+            val cw = (width - 2 * margin - (cols - 1) * gap) / cols
+            val l = margin + k.col * (cw + gap)
             val t = topPad + k.row * (keyH + gap)
-            rects[k] = RectF(l, t, l + k.colSpan * keyW + (k.colSpan - 1) * gap,
+            rects[k] = RectF(l, t, l + k.colSpan * cw + (k.colSpan - 1) * gap,
                 t + k.rowSpan * keyH + (k.rowSpan - 1) * gap)
         }
     }
@@ -141,7 +148,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         val t = active ?: return@Runnable
         if (t.key.type == KeyType.CHAR) {
             // 吹き出しが出た後は十字ガイドに切り替えない (iOS と同じ)
-            if (!t.flicked) {
+            if (!t.flicked && t.key.flick.drop(1).any { it != null }) {
                 t.guide = true
                 invalidate()
             }
@@ -251,6 +258,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             abs(dx) > abs(dy) -> if (dx < 0) Dir.L else Dir.R
             else -> if (dy < 0) Dir.U else Dir.D
         }
+        // QWERTY など中央しかないキーは、指がずれても中央扱い
+        if (t.key.flick.drop(1).all { it == null }) return Dir.C
         return if (t.key.flick[d] == null) Dir.NONE else d
     }
 
@@ -319,6 +328,9 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 if (k.sub != null) {
                     text(c, k.label, cx, cy - s * 0.12f, s * 0.44f, fg)
                     text(c, k.sub, cx, cy + s * 0.25f, s * 0.24f, fg)
+                } else if (mode.isQwerty) {
+                    val lbl = if (state.shift > 0) k.label.uppercase() else k.label
+                    text(c, lbl, cx, cy, s * 0.46f, fg)
                 } else {
                     val latin = k.label.first().code < 0x3000
                     text(c, k.label, cx, cy, if (latin) s * 0.36f else s * 0.47f, fg,
@@ -338,6 +350,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                 if (state.modifiable) text(c, "小゛゜", cx, cy, s * 0.36f, fg)
                 else text(c, "^_^", cx, cy, s * 0.36f, fg)
             KeyType.CASE -> text(c, k.label, cx, cy, s * 0.36f, fg, spacing = 0.1f)
+            KeyType.SHIFT -> drawShift(c, cx, cy, s * 0.42f, fg, state.shift)
             KeyType.EMOJI -> {}
         }
     }
@@ -497,6 +510,31 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         path.lineTo(cx + w, cy - rad + w)
         c.drawPath(path, stroke)
         c.restore()
+    }
+
+    /** ⇧。オン = 塗りつぶし、ロック = 下に横線 */
+    private fun drawShift(c: Canvas, cx: Float, cy: Float, s: Float, color: Int, st: Int) {
+        val h = s / 2
+        path.reset()
+        path.moveTo(cx, cy - h)
+        path.lineTo(cx + h, cy)
+        path.lineTo(cx + h * 0.45f, cy)
+        path.lineTo(cx + h * 0.45f, cy + h * 0.6f)
+        path.lineTo(cx - h * 0.45f, cy + h * 0.6f)
+        path.lineTo(cx - h * 0.45f, cy)
+        path.lineTo(cx - h, cy)
+        path.close()
+        if (st > 0) {
+            fill.color = color
+            c.drawPath(path, fill)
+        } else {
+            prepStroke(color, 1.6f * dp)
+            c.drawPath(path, stroke)
+        }
+        if (st == 2) {
+            prepStroke(color, 1.6f * dp)
+            c.drawLine(cx - h * 0.45f, cy + h * 0.95f, cx + h * 0.45f, cy + h * 0.95f, stroke)
+        }
     }
 
     private fun drawBackspace(c: Canvas, cx: Float, cy: Float, s: Float, color: Int) {

@@ -1,9 +1,15 @@
 package io.github.nuko6925.flickkb
 
-enum class Mode { KANA, ALPHA, NUM }
+enum class Mode {
+    KANA, ALPHA, NUM,
+    /** パスワード欄用の QWERTY (iOS と同じく英字 / 数字 / 記号の3面) */
+    QWERTY, QWERTY_NUM, QWERTY_SYM;
+
+    val isQwerty get() = this == QWERTY || this == QWERTY_NUM || this == QWERTY_SYM
+}
 
 enum class KeyType {
-    CHAR, CURSOR_NEXT, TOGGLE_BACK, TOGGLE_FWD, MODE, DELETE, SPACE, ENTER, MODIFIER, CASE, EMOJI
+    CHAR, CURSOR_NEXT, TOGGLE_BACK, TOGGLE_FWD, MODE, DELETE, SPACE, ENTER, MODIFIER, CASE, EMOJI, SHIFT
 }
 
 /** フリック方向。flick 配列の添字に対応 */
@@ -103,9 +109,48 @@ object Layouts {
         ch(3, 3, ".,-/", chars(".,-/")),
     )
 
+    // ---- QWERTY (20 の半マス格子。文字キーは2マス幅、2段目は1マスずらす) ----
+
+    private fun qkey(col: Int, row: Int, s: String, span: Int = 2) =
+        Key(KeyType.CHAR, col, row, colSpan = span, label = s, flick = arrayOf(s, null, null, null, null),
+            cycle = listOf(s), toggle = false)
+
+    private fun qrow(row: Int, start: Int, chars: String, span: Int = 2) =
+        chars.mapIndexed { i, c -> qkey(start + i * span, row, c.toString(), span) }
+
+    private fun qbottom(modeLabel: String, target: Mode) = listOf(
+        Key(KeyType.MODE, 0, 3, colSpan = 5, label = modeLabel, targetMode = target),
+        Key(KeyType.SPACE, 5, 3, colSpan = 10),
+        Key(KeyType.ENTER, 15, 3, colSpan = 5),
+    )
+
+    val qwerty: List<Key> = qrow(0, 0, "qwertyuiop") + qrow(1, 1, "asdfghjkl") + listOf(
+        Key(KeyType.SHIFT, 0, 2, colSpan = 3),
+        Key(KeyType.DELETE, 17, 2, colSpan = 3),
+    ) + qrow(2, 3, "zxcvbnm") + qbottom("123", Mode.QWERTY_NUM)
+
+    /** 3段目の記号5つは中央寄せ */
+    private fun qpunct() = qrow(2, 5, ".,?!'")
+
+    val qwertyNum: List<Key> = qrow(0, 0, "1234567890") + qrow(1, 0, "-/:;()¥&@\"") + listOf(
+        Key(KeyType.MODE, 0, 2, colSpan = 3, label = "#+=", targetMode = Mode.QWERTY_SYM),
+        Key(KeyType.DELETE, 17, 2, colSpan = 3),
+    ) + qpunct() + qbottom("ABC", Mode.QWERTY)
+
+    val qwertySym: List<Key> = qrow(0, 0, "[]{}#%^*+=") + qrow(1, 0, "_\\|~<>\$€£•") + listOf(
+        Key(KeyType.MODE, 0, 2, colSpan = 3, label = "123", targetMode = Mode.QWERTY_NUM),
+        Key(KeyType.DELETE, 17, 2, colSpan = 3),
+    ) + qpunct() + qbottom("ABC", Mode.QWERTY)
+
     fun of(mode: Mode) = when (mode) {
         Mode.KANA -> kana
         Mode.ALPHA -> alpha
         Mode.NUM -> num
+        Mode.QWERTY -> qwerty
+        Mode.QWERTY_NUM -> qwertyNum
+        Mode.QWERTY_SYM -> qwertySym
     }
+
+    /** 横方向のマス数 */
+    fun cols(mode: Mode) = if (mode.isQwerty) 20 else 5
 }
