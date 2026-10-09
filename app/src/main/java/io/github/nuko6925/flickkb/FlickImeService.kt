@@ -37,6 +37,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     private lateinit var emojiPanel: EmojiPanelView
     private lateinit var candPanel: CandidatePanelView
     private lateinit var autofillBar: AutofillBarView
+    private lateinit var vaultPanel: VaultPanelView
 
     // ---- パスワード欄・自動入力 ----
     /** 文字のパスワード欄 (QWERTY + スクショ禁止) */
@@ -96,6 +97,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             addView(autofillBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
         emojiPanel = EmojiPanelView(this, this).apply { visibility = View.GONE }
+        vaultPanel = VaultPanelView(this, { e -> pickVault(e) }, { showVault(false) }).apply { visibility = View.GONE }
         kbContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false   // 上段フリックのポップアップを候補バー上に描くため
@@ -110,6 +112,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             // 絵文字パネルはキーボード部(候補バー込み)と同じ大きさで重ねる
             addView(emojiPanel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(candPanel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(vaultPanel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             setOnApplyWindowInsetsListener { v, insets ->
                 val bottom = if (Build.VERSION.SDK_INT >= 30)
                     insets.getInsets(WindowInsets.Type.navigationBars()).bottom
@@ -136,6 +139,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         candBar.theme = t
         emojiPanel.theme = t
         candPanel.theme = t
+        vaultPanel.theme = t
         autofillBar.theme = t
         panelBg.setColor(t.bg)
         panelBg.cornerRadii = radii()
@@ -148,6 +152,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         reset()
         showEmoji(false)
         showCandPanel(false)
+        showVault(false)
         fullwidthSpace = Settings.fullwidthSpace(this)
         val cls = info.inputType and InputType.TYPE_MASK_CLASS
         val variation = info.inputType and InputType.TYPE_MASK_VARIATION
@@ -256,7 +261,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     }
 
     /**
-     * 🔑: Hajiku の保管庫 (生体認証 → 一覧から選択 → このキーボードが入力)。
+     * 🔑: 生体認証 → キーボード内に保管庫の一覧 → 選ぶとこのキーボードが入力。
+     * 画面を切り替えないので、OS のバックグラウンド起動制限にも掛からず入力欄のフォーカスも外れない。
      * 別のパスワード管理アプリを自動入力サービスにしている場合はそのアプリを開く
      */
     private fun openPasswordManager() {
@@ -264,13 +270,48 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         val pkg = svc?.substringBefore('/')
         val other = pkg?.takeIf { it != packageName && it != "com.google.android.gms" }
             ?.let { packageManager.getLaunchIntentForPackage(it) }
-        val intent = other ?: Intent(this, VaultActivity::class.java)
-            .putExtra(VaultActivity.EXTRA_PICK, true)
-            .putExtra(VaultActivity.EXTRA_PKG, currentInputEditorInfo?.packageName)
-        Diag.log("ime: 🔑 サービス=$svc → ${intent.component?.className ?: intent.`package`}")
-        runCatching { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-            .onSuccess { Diag.log("ime: 🔑 startActivity 呼び出し成功") }
-            .onFailure { Diag.log("ime: 🔑 失敗 $it"); autofillBar.showMessage("開けませんでした") }
+        if (other != null) {
+            Diag.log("ime: 🔑 他のサービス $pkg を開く")
+            runCatching { startActivity(other.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                .onFailure { autofillBar.showMessage("開けませんでした") }
+            return
+        }
+        Diag.log("ime: 🔑 認証開始")
+        VaultAuth.authenticate(this, "パスワードを表示",
+            onOk = { Diag.log("ime: 🔑 認証成功"); showVault(true) },
+            onFail = { msg -> Diag.log("ime: 🔑 認証失敗 $msg"); msg?.let { autofillBar.showMessage(it) } })
+    }
+
+    private fun showVault(show: Boolean) {
+        if (!::vaultPanel.isInitialized) return
+        if (show) {
+            val app = currentInputEditorInfo?.packageName
+            val domain = LastLoginContext.domainFor(app)
+            val store = VaultStore.get(this)
+            val matching = store.matching(domain, app)
+            val others = store.all().filter { e -> matching.none { it.id == e.id } }
+            vaultPanel.set(matching, others)
+            vaultPanel.visibility = View.VISIBLE
+            kbContainer.visibility = View.INVISIBLE
+        } else if (vaultPanel.visibility != View.GONE) {
+            vaultPanel.visibility = View.GONE
+            kbContainer.visibility = View.VISIBLE
+        }
+    }
+
+    private fun pickVault(e: VaultEntry) {
+        val pw = try {
+            VaultStore.get(this).password(e.id)
+        } catch (ex: Exception) {
+            // 認証から 60 秒過ぎた: もう一度
+            Diag.log("ime: 復号失敗 ${ex.javaClass.simpleName}")
+            VaultAuth.authenticate(this, "パスワードを入力", onOk = { pickVault(e) }, onFail = { showVault(false) })
+            return
+        } ?: return
+        VaultStore.get(this).touch(e.id)
+        showVault(false)
+        PendingFill.set(e.username, pw)
+        applyPendingFill()
     }
 
     // ---- 🔑 で選んだアカウントの入力 ----

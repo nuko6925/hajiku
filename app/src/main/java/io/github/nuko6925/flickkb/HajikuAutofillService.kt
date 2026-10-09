@@ -114,6 +114,7 @@ class HajikuAutofillService : AutofillService() {
         val ids = listOfNotNull(f.username, f.password)
         Diag.log("fill: pkg=${f.pkg} domain=${f.rawDomain}(信用=${f.domain != null}) user欄=${f.username != null} pass欄=${f.password != null}")
         if (ids.isEmpty() || f.pkg == packageName) return callback.onSuccess(null)
+        LastLoginContext.set(f.pkg, f.domain)
 
         val entries = VaultStore.get(this).matching(f.domain, f.pkg)
         val resp = FillResponse.Builder()

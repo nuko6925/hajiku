@@ -170,7 +170,8 @@ object VaultAuth {
         return km?.isDeviceSecure == true
     }
 
-    fun authenticate(activity: Activity, title: String, onOk: () -> Unit, onFail: (String?) -> Unit) {
+    /** context はアクティビティでもサービス (キーボード) でもよい */
+    fun authenticate(activity: Context, title: String, onOk: () -> Unit, onFail: (String?) -> Unit) {
         if (!canAuthenticate(activity)) {
             onFail("端末の画面ロック (PIN・パスワード等) を設定してください")
             return
@@ -195,6 +196,19 @@ object VaultAuth {
 }
 
 /** 🔑 から選んだアカウントを IME に渡す (同一プロセス内) */
+/** 直近の自動入力要求で分かったサイト (キーボードの 🔑 一覧の並び替えに使う。同一プロセス内) */
+object LastLoginContext {
+    @Volatile var pkg: String? = null
+    @Volatile var domain: String? = null
+    @Volatile var at = 0L
+
+    fun set(p: String, d: String?) { pkg = p; domain = d; at = System.currentTimeMillis() }
+
+    /** 同じアプリで 10 分以内ならそのドメイン */
+    fun domainFor(p: String?): String? =
+        domain.takeIf { p != null && p == pkg && System.currentTimeMillis() - at < 600_000 }
+}
+
 object PendingFill {
     private var username: String? = null
     private var password: String? = null
