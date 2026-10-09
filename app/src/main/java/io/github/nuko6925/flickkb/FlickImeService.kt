@@ -470,6 +470,6 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     }
 
     companion object {
-        private const val TOGGLE_TIMEOUT_MS = 1500L
+        private const val TOGGLE_TIMEOUT_MS = 750L
     }
 }

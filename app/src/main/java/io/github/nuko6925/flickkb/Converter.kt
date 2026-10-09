@@ -124,7 +124,8 @@ class Converter(context: Context) {
             }
             preds.forEach { add(it.surface, full, r = it.reading) }
             fpreds.forEach { add(it.surface, full, r = it.reading) }
-            add(toHalfWidth(reading), full)
+            // 末尾に半角カタカナ (ｶﾀｶﾅ)
+            add(toHalfKatakana(reading), full)
         } else {
             add(reading, full)
             if (reading.any { it in 'a'..'z' || it in 'A'..'Z' } && reading.all { it.code < 0x80 }) {
@@ -136,11 +137,13 @@ class Converter(context: Context) {
                 }
                 learn.lookup(reading).forEach { add(it, full) }
                 user.lookup(reading.lowercase()).forEach { add(it, full) }
+                // 先頭付近に 先頭大文字 / 全部大文字 / 全角
+                add(reading.replaceFirstChar { it.uppercase() }, full)
+                add(reading.uppercase(), full)
+                add(toFullWidth(reading), full)
                 learn.predict(reading.lowercase()).forEach { (r, s) -> add(s, full, r = r) }
                 user.predict(reading.lowercase()).forEach { (r, s) -> add(s, full, r = r) }
                 english(reading.lowercase()).forEach { add(case(fixI(it)), full, r = it) }
-                add(reading.replaceFirstChar { it.uppercase() }, full)
-                add(reading.uppercase(), full)
             }
             add(toFullWidth(reading), full)
         }
@@ -358,6 +361,23 @@ class Converter(context: Context) {
 
         fun toKatakana(s: String) = buildString {
             for (c in s) append(if (c in 'ぁ'..'ゖ') c + 0x60 else c)
+        }
+
+        private const val FULL_KANA = "ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶー・「」、。"
+        private val HALF_KANA = arrayOf(
+            "ｧ", "ｱ", "ｨ", "ｲ", "ｩ", "ｳ", "ｪ", "ｴ", "ｫ", "ｵ", "ｶ", "ｶﾞ", "ｷ", "ｷﾞ", "ｸ", "ｸﾞ", "ｹ", "ｹﾞ", "ｺ", "ｺﾞ",
+            "ｻ", "ｻﾞ", "ｼ", "ｼﾞ", "ｽ", "ｽﾞ", "ｾ", "ｾﾞ", "ｿ", "ｿﾞ", "ﾀ", "ﾀﾞ", "ﾁ", "ﾁﾞ", "ｯ", "ﾂ", "ﾂﾞ", "ﾃ", "ﾃﾞ", "ﾄ", "ﾄﾞ",
+            "ﾅ", "ﾆ", "ﾇ", "ﾈ", "ﾉ", "ﾊ", "ﾊﾞ", "ﾊﾟ", "ﾋ", "ﾋﾞ", "ﾋﾟ", "ﾌ", "ﾌﾞ", "ﾌﾟ", "ﾍ", "ﾍﾞ", "ﾍﾟ", "ﾎ", "ﾎﾞ", "ﾎﾟ",
+            "ﾏ", "ﾐ", "ﾑ", "ﾒ", "ﾓ", "ｬ", "ﾔ", "ｭ", "ﾕ", "ｮ", "ﾖ", "ﾗ", "ﾘ", "ﾙ", "ﾚ", "ﾛ", "ﾜ", "ﾜ", "ｲ", "ｴ", "ｦ", "ﾝ",
+            "ｳﾞ", "ｶ", "ｹ", "ｰ", "･", "｢", "｣", "､", "｡",
+        )
+
+        /** ひらがな・カタカナ → 半角カタカナ (濁点は ﾞ ﾟ に分ける) */
+        fun toHalfKatakana(s: String) = buildString {
+            for (c in toKatakana(s)) {
+                val i = FULL_KANA.indexOf(c)
+                append(if (i >= 0) HALF_KANA[i] else c.toString())
+            }
         }
 
         fun toFullWidth(s: String) = buildString {
