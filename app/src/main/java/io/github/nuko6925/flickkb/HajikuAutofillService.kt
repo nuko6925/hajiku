@@ -34,7 +34,12 @@ class LoginFields(
     val passwordValue: String?,
     /** 信用しなかったものも含めた申告ドメイン (診断用) */
     val rawDomain: String? = null,
-)
+    /** ユーザー名欄がアプリ自身の申告 (autofillHints / メール入力形式) で確実 */
+    val usernameStrong: Boolean = false,
+) {
+    /** 自動入力の対象: パスワード欄がある、またはユーザー名欄が確実 */
+    val isLogin get() = password != null || (username != null && usernameStrong)
+}
 
 /** Web サイトの申告 (webDomain) を信用するブラウザ。それ以外のアプリはパッケージ名で照合 */
 private val TRUSTED_BROWSERS = setOf(
@@ -48,7 +53,8 @@ private val TRUSTED_BROWSERS = setOf(
 private fun trustWebDomain(pkg: String) = pkg in TRUSTED_BROWSERS || pkg.startsWith("io.github.nuko6925.")
 
 object LoginParser {
-    private val USER_WORDS = listOf("user", "mail", "login", "account", "id", "ユーザー", "メール", "アカウント")
+    /** 「id」は単語としてだけ (grid / android 等に反応しない) */
+    private val USER_WORDS = Regex("user|mail|login|account|(^|[^a-z])id($|[^a-z])|ユーザー|メール|アカウント", RegexOption.IGNORE_CASE)
 
     fun parse(structure: AssistStructure): LoginFields {
         val pkg = structure.activityComponent.packageName
@@ -67,13 +73,19 @@ object LoginParser {
             return n.htmlInfo?.attributes?.any { it.first == "type" && it.second == "password" } == true
         }
 
-        fun isUser(n: AssistStructure.ViewNode): Boolean {
+        /** アプリ自身がユーザー名・メール欄だと申告している */
+        fun isUserStrong(n: AssistStructure.ViewNode): Boolean {
             if (n.autofillHints?.any { h -> listOf("username", "email", "phone").any { h.contains(it, true) } } == true) return true
+            if (n.htmlInfo?.attributes?.any { it.first == "autocomplete" && (it.second == "username" || it.second == "email") } == true) return true
             val v = n.inputType and InputType.TYPE_MASK_VARIATION
-            if (v == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS || v == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS) return true
-            val words = listOfNotNull(n.idEntry, n.hint, n.htmlInfo?.attributes?.firstOrNull { it.first == "name" }?.second,
-                n.htmlInfo?.attributes?.firstOrNull { it.first == "autocomplete" }?.second)
-            return words.any { w -> USER_WORDS.any { w.contains(it, true) } }
+            return n.inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_CLASS_TEXT &&
+                (v == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS || v == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS)
+        }
+
+        fun isUser(n: AssistStructure.ViewNode): Boolean {
+            if (isUserStrong(n)) return true
+            val words = listOfNotNull(n.idEntry, n.hint, n.htmlInfo?.attributes?.firstOrNull { it.first == "name" }?.second)
+            return words.any { USER_WORDS.containsMatchIn(it) }
         }
 
         fun walk(n: AssistStructure.ViewNode) {
@@ -90,12 +102,14 @@ object LoginParser {
         }
         for (i in 0 until structure.windowNodeCount) walk(structure.getWindowNodeAt(i).rootViewNode)
 
+        val u = user
         return LoginFields(
-            user?.autofillId, pass?.autofillId,
+            u?.autofillId, pass?.autofillId,
             domain?.takeIf { trustWebDomain(pkg) }, pkg,
-            user?.autofillValue?.takeIf { it.isText }?.textValue?.toString(),
+            u?.autofillValue?.takeIf { it.isText }?.textValue?.toString(),
             pass?.autofillValue?.takeIf { it.isText }?.textValue?.toString(),
             domain,
+            usernameStrong = u != null && isUserStrong(u),
         )
     }
 }
@@ -113,8 +127,9 @@ class HajikuAutofillService : AutofillService() {
         val structure = request.fillContexts.lastOrNull()?.structure ?: return callback.onSuccess(null)
         val f = LoginParser.parse(structure)
         val ids = listOfNotNull(f.username, f.password)
-        Diag.log("fill: pkg=${f.pkg} domain=${f.rawDomain}(信用=${f.domain != null}) user欄=${f.username != null} pass欄=${f.password != null}")
-        if (ids.isEmpty() || f.pkg == packageName) return callback.onSuccess(null)
+        Diag.log("fill: pkg=${f.pkg} domain=${f.rawDomain}(信用=${f.domain != null}) user欄=${f.username != null}(確実=${f.usernameStrong}) pass欄=${f.password != null}")
+        // ログイン欄でなければ何も出さない (チャット欄などに 🔑 を出さない)
+        if (!f.isLogin || f.pkg == packageName) return callback.onSuccess(null)
         LastLoginContext.set(f.pkg, f.domain)
 
         val entries = VaultStore.get(this).matching(f.domain, f.pkg)
