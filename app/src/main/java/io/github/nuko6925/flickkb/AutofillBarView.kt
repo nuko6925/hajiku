@@ -106,19 +106,10 @@ class AutofillBarView(context: Context, onKey: () -> Unit) : LinearLayout(contex
         scroll.visibility = VISIBLE
     }
 
+    /** 🔑 は常に右端。サービスの固定表示候補 (pinned) は候補の後ろに並べる */
     fun setSuggestions(views: List<View>, pinned: List<View> = emptyList()) {
-        right.removeAllViews()
-        if (pinned.isEmpty()) {
-            right.addView(key, LayoutParams((48 * dp).toInt(), LayoutParams.MATCH_PARENT))
-        } else for (v in pinned) {
-            (v.parent as? ViewGroup)?.removeView(v)
-            right.addView(v, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                setMargins((4 * dp).toInt(), 0, (8 * dp).toInt(), 0)
-            })
-        }
         row.removeAllViews()
-        for (v in views) {
+        for (v in views + pinned) {
             (v.parent as? ViewGroup)?.removeView(v)
             row.addView(v, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER_VERTICAL

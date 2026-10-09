@@ -173,6 +173,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             cls == InputType.TYPE_CLASS_TEXT && alphaVariation -> Mode.ALPHA
             else -> Mode.KANA
         }
+        // 🔑 から戻ってきた時の入力
+        handler.post { applyPendingFill() }
         // パスワード入力中はキーボードをスクショ・画面録画に写さない
         window?.window?.let { w ->
             if (password) w.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -250,24 +252,51 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         }
     }
 
-    /** 🔑: 今選ばれている自動入力サービスのアプリを開く */
+    /**
+     * 🔑: Hajiku の保管庫 (生体認証 → 一覧から選択 → このキーボードが入力)。
+     * 別のパスワード管理アプリを自動入力サービスにしている場合はそのアプリを開く
+     */
     private fun openPasswordManager() {
-        val pkg = android.provider.Settings.Secure.getString(contentResolver, "autofill_service")
-            ?.substringBefore('/')
-        val intent = when {
-            pkg == null -> null
-            // Google はアプリとしてのランチャーが無いので、端末のパスワードマネージャー画面へ
-            pkg == "com.google.android.gms" -> Intent()
-                .setClassName(pkg, "com.google.android.gms.credential.manager.PasswordManagerActivity")
-                .takeIf { it.resolveActivity(packageManager) != null }
-            else -> packageManager.getLaunchIntentForPackage(pkg)
+        val svc = android.provider.Settings.Secure.getString(contentResolver, "autofill_service")
+        val pkg = svc?.substringBefore('/')
+        val other = pkg?.takeIf { it != packageName && it != "com.google.android.gms" }
+            ?.let { packageManager.getLaunchIntentForPackage(it) }
+        val intent = other ?: Intent(this, VaultActivity::class.java)
+            .putExtra(VaultActivity.EXTRA_PICK, true)
+            .putExtra(VaultActivity.EXTRA_PKG, currentInputEditorInfo?.packageName)
+        runCatching { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            .onFailure { autofillBar.showMessage("開けませんでした") }
+    }
+
+    // ---- 🔑 で選んだアカウントの入力 ----
+
+    /** ユーザー名を入れた後、次の欄 (パスワード) で入れる分 */
+    private var queuedPassword: String? = null
+    private var queuedAt = 0L
+
+    private fun applyPendingFill() {
+        val ic = currentInputConnection ?: return
+        val now = System.currentTimeMillis()
+        val q = queuedPassword
+        if (q != null && now - queuedAt < 15_000) {
+            if (passwordField) {
+                queuedPassword = null
+                ic.performContextMenuAction(android.R.id.selectAll)
+                ic.commitText(q, 1)
+            }
+            return
         }
-        // トーストを出さない端末があるので、バー上に文言を出す
-        when {
-            pkg == null -> autofillBar.showMessage("自動入力サービスが未設定です（設定 → パスワードとアカウント）")
-            intent == null -> autofillBar.showMessage("このサービスは開けません。候補の右端から選んでください")
-            else -> runCatching { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                .onFailure { autofillBar.showMessage("開けませんでした") }
+        queuedPassword = null
+        val (user, pass) = PendingFill.take() ?: return
+        ic.performContextMenuAction(android.R.id.selectAll)
+        if (passwordField) {
+            ic.commitText(pass, 1)
+        } else {
+            ic.commitText(user, 1)
+            queuedPassword = pass
+            queuedAt = now
+            // 次の欄へ (多くのログイン画面はユーザー名 → パスワード)
+            ic.performEditorAction(EditorInfo.IME_ACTION_NEXT)
         }
     }
 

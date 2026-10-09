@@ -5,6 +5,7 @@
 
     <application
         android:label="@string/app_name"
+        android:allowBackup="false"
         android:theme="@android:style/Theme.DeviceDefault.DayNight"
         android:supportsRtl="true">
 
@@ -26,6 +27,31 @@
             android:name=".LicensesActivity"
             android:label="ライセンス"
             android:exported="false" />
+
+        <activity
+            android:name=".VaultActivity"
+            android:label="パスワード"
+            android:excludeFromRecents="true"
+            android:exported="false" />
+
+        <activity
+            android:name=".VaultAuthActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:exported="false" />
+
+        <service
+            android:name=".HajikuAutofillService"
+            android:label="Hajiku"
+            android:permission="android.permission.BIND_AUTOFILL_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.autofill.AutofillService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.autofill"
+                android:resource="@xml/autofill_service" />
+        </service>
 
         <service
             android:name=".FlickImeService"

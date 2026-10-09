@@ -30,6 +30,19 @@ class MainActivity : Activity() {
                 setOnClickListener { startActivity(Intent(this@MainActivity, UserDictActivity::class.java)) }
             })
             addView(Button(this@MainActivity).apply {
+                text = "パスワード"
+                setOnClickListener { startActivity(Intent(this@MainActivity, VaultActivity::class.java)) }
+            })
+            addView(Button(this@MainActivity).apply {
+                text = "Hajiku を自動入力サービスにする"
+                setOnClickListener {
+                    runCatching {
+                        startActivity(Intent(android.provider.Settings.ACTION_REQUEST_SET_AUTOFILL_SERVICE,
+                            android.net.Uri.parse("package:$packageName")))
+                    }
+                }
+            })
+            addView(Button(this@MainActivity).apply {
                 text = "ライセンス"
                 setOnClickListener { startActivity(Intent(this@MainActivity, LicensesActivity::class.java)) }
             })
