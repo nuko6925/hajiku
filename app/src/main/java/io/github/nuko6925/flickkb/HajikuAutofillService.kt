@@ -208,7 +208,10 @@ class HajikuAutofillService : AutofillService() {
         val attribution = PendingIntent.getActivity(this, 1, Intent(this, VaultActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE)
         val content = InlineSuggestionUi.newContentBuilder(attribution)
-            .setStartIcon(Icon.createWithResource(packageName, res))
+            // キーボードの文字色に合わせる (ライト: 黒 / ダーク: 白)
+            .setStartIcon(Icon.createWithResource(packageName, res).setTint(
+                if ((resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+                    android.content.res.Configuration.UI_MODE_NIGHT_YES) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()))
             .setContentDescription("その他のパスワード").build()
         return InlinePresentation(content.slice, spec, true)
     }

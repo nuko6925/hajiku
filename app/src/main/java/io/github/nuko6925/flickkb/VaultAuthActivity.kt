@@ -41,11 +41,67 @@ class VaultAuthActivity : Activity() {
             Toast.makeText(this, "保存されたパスワードはありません", Toast.LENGTH_SHORT).show()
             setResult(RESULT_CANCELED); finish(); return
         }
-        val labels = list.map { "${it.username.ifEmpty { "(ユーザー名なし)" }}\n${it.title}" }.toTypedArray()
-        android.app.AlertDialog.Builder(this).setTitle("パスワードを選択")
-            .setItems(labels) { _, i -> fill(list[i].id) }
-            .setOnCancelListener { setResult(RESULT_CANCELED); finish() }
-            .show()
+        showSheet(matching, store.all().filter { e -> matching.none { it.id == e.id } })
+    }
+
+    /** iOS 風のシート: 画面下から 9 割の高さ。外側タップ / × で閉じる */
+    private fun showSheet(matching: List<VaultEntry>, others: List<VaultEntry>) {
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        val cancel = { setResult(RESULT_CANCELED); finish() }
+        val site = intent.getStringExtra(EXTRA_DOMAIN)
+        val sheet = VaultPickerView(this, site, matching, others,
+            onPick = { e -> fill(e.id) },
+            onInfo = { e -> info(e) },
+            onClose = cancel,
+            onAdd = {
+                // 追加は保管庫画面で (戻ってきたら選び直し)
+                startActivity(android.content.Intent(this, VaultActivity::class.java))
+                cancel()
+            })
+        val h = (resources.displayMetrics.heightPixels * 0.9f).toInt()
+        setContentView(android.widget.FrameLayout(this).apply {
+            setBackgroundColor(0x66000000)
+            setOnClickListener { cancel() }
+            addView(sheet, android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT, h, android.view.Gravity.BOTTOM).apply {
+                topMargin = 0
+            })
+            sheet.isClickable = true  // シート内のタップで閉じない
+            // ナビゲーションバーの分だけ検索欄を上げる
+            setOnApplyWindowInsetsListener { _, insets ->
+                @Suppress("DEPRECATION") sheet.setPadding(0, 0, 0, insets.systemWindowInsetBottom)
+                insets
+            }
+        })
+        sheet.translationY = h.toFloat()
+        sheet.animate().translationY(0f).setDuration(260).start()
+    }
+
+    /** ⓘ: ユーザー名とパスワードの表示・コピー */
+    private fun info(e: VaultEntry) {
+        val pw = runCatching { VaultStore.get(this).password(e.id) }.getOrNull().orEmpty()
+        val shown = booleanArrayOf(false)
+        val pwView = android.widget.TextView(this).apply {
+            text = "••••••••"; textSize = 18f
+            setOnClickListener { shown[0] = !shown[0]; text = if (shown[0]) pw else "••••••••" }
+        }
+        val p = (20 * resources.displayMetrics.density).toInt()
+        android.app.AlertDialog.Builder(this).setTitle(e.title)
+            .setView(android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL; setPadding(p, p / 2, p, 0)
+                addView(android.widget.TextView(this@VaultAuthActivity).apply { text = "ユーザー名"; textSize = 12f })
+                addView(android.widget.TextView(this@VaultAuthActivity).apply { text = e.username; textSize = 18f; setTextIsSelectable(true) })
+                addView(android.widget.TextView(this@VaultAuthActivity).apply { text = "パスワード (タップで表示)"; textSize = 12f; setPadding(0, p / 2, 0, 0) })
+                addView(pwView)
+            })
+            .setPositiveButton("入力") { _, _ -> fill(e.id) }
+            .setNeutralButton("パスワードをコピー") { _, _ ->
+                val clip = android.content.ClipData.newPlainText("password", pw)
+                clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+                getSystemService(android.content.ClipboardManager::class.java)?.setPrimaryClip(clip)
+                Toast.makeText(this, "コピーしました", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("閉じる", null).show()
     }
 
     private fun fill(id: Long = intent.getLongExtra(EXTRA_ID, -1)) {
