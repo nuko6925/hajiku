@@ -22,16 +22,33 @@ class VaultAuthActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val mode = intent.getStringExtra(EXTRA_MODE)
+        Diag.init(this)
+        Diag.log("auth: 起動 mode=$mode")
         VaultAuth.authenticate(this, if (mode == MODE_SAVE) "パスワードを保存" else "パスワードを入力",
-            onOk = { if (mode == MODE_SAVE) save() else fill() },
+            onOk = { when (mode) { MODE_SAVE -> save(); MODE_PICK -> pick(); else -> fill() } },
             onFail = { msg ->
                 msg?.let { Toast.makeText(this, it, Toast.LENGTH_SHORT).show() }
                 setResult(RESULT_CANCELED); finish()
             })
     }
 
-    private fun fill() {
-        val id = intent.getLongExtra(EXTRA_ID, -1)
+    /** その他のパスワード: 一覧 (このサイトのものが先頭) から選ぶ */
+    private fun pick() {
+        val store = VaultStore.get(this)
+        val matching = store.matching(intent.getStringExtra(EXTRA_DOMAIN), intent.getStringExtra(EXTRA_PKG))
+        val list = matching + store.all().filter { e -> matching.none { it.id == e.id } }
+        if (list.isEmpty()) {
+            Toast.makeText(this, "保存されたパスワードはありません", Toast.LENGTH_SHORT).show()
+            setResult(RESULT_CANCELED); finish(); return
+        }
+        val labels = list.map { "${it.username.ifEmpty { "(ユーザー名なし)" }}\n${it.title}" }.toTypedArray()
+        android.app.AlertDialog.Builder(this).setTitle("パスワードを選択")
+            .setItems(labels) { _, i -> fill(list[i].id) }
+            .setOnCancelListener { setResult(RESULT_CANCELED); finish() }
+            .show()
+    }
+
+    private fun fill(id: Long = intent.getLongExtra(EXTRA_ID, -1)) {
         val store = VaultStore.get(this)
         val e = store.all().firstOrNull { it.id == id }
         val pw = runCatching { store.password(id) }.getOrNull()
@@ -62,6 +79,7 @@ class VaultAuthActivity : Activity() {
         private const val EXTRA_MODE = "mode"
         private const val MODE_FILL = "fill"
         private const val MODE_SAVE = "save"
+        private const val MODE_PICK = "pick"
         private const val EXTRA_ID = "id"
         private const val EXTRA_USER_ID = "user_id"
         private const val EXTRA_PASS_ID = "pass_id"
@@ -77,6 +95,14 @@ class VaultAuthActivity : Activity() {
                 .putExtra(EXTRA_MODE, MODE_FILL).putExtra(EXTRA_ID, id)
                 .putExtra(EXTRA_USER_ID, user).putExtra(EXTRA_PASS_ID, pass)
             // FLAG_MUTABLE: システムが認証結果を受け取るために extras を足す
+            return PendingIntent.getActivity(ctx, reqCode++, i,
+                PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_MUTABLE)
+        }
+
+        fun pickIntent(ctx: Context, user: AutofillId?, pass: AutofillId?, domain: String?, pkg: String): PendingIntent {
+            val i = Intent(ctx, VaultAuthActivity::class.java)
+                .putExtra(EXTRA_MODE, MODE_PICK).putExtra(EXTRA_USER_ID, user).putExtra(EXTRA_PASS_ID, pass)
+                .putExtra(EXTRA_DOMAIN, domain).putExtra(EXTRA_PKG, pkg)
             return PendingIntent.getActivity(ctx, reqCode++, i,
                 PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_MUTABLE)
         }

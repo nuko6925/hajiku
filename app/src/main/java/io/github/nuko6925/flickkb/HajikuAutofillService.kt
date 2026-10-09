@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.app.assist.AssistStructure
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.CancellationSignal
 import android.service.autofill.AutofillService
@@ -139,13 +140,30 @@ class HajikuAutofillService : AutofillService() {
             resp.addDataset(ds.build())
         }
 
+        // 「その他のパスワード」: 固定表示の候補 (キーボードは右端の 🔑 として表示)。
+        // タップすると OS が認証画面を開く → 一覧から選ぶ → 入力。キーボードから直接画面は開けないためこの経路
+        run {
+            val pick = VaultAuthActivity.pickIntent(this, f.username, f.password, f.domain, f.pkg)
+            val rv = remote("その他のパスワード…", "Hajiku")
+            val pinned = if (Build.VERSION.SDK_INT >= 30 && specs.isNotEmpty())
+                keyInline(specs.last()) else null
+            val ds = Dataset.Builder(rv).setAuthentication(pick.intentSender)
+            for (id in ids) {
+                if (pinned != null && Build.VERSION.SDK_INT >= 30) {
+                    @Suppress("DEPRECATION") ds.setValue(id, null, rv, pinned)
+                } else {
+                    @Suppress("DEPRECATION") ds.setValue(id, null, rv)
+                }
+            }
+            resp.addDataset(ds.build())
+        }
+
         // 保存: ログインしたら「Hajiku に保存しますか?」
         if (f.password != null) {
             val type = SaveInfo.SAVE_DATA_TYPE_PASSWORD or (if (f.username != null) SaveInfo.SAVE_DATA_TYPE_USERNAME else 0)
             resp.setSaveInfo(SaveInfo.Builder(type, ids.toTypedArray()).build())
         }
         Diag.log("fill: 一致=${entries.size} インライン枠=$maxInline spec=${specs.size}")
-        if (entries.isEmpty() && f.password == null) return callback.onSuccess(null)
         callback.onSuccess(runCatching { resp.build() }.onFailure { Diag.log("fill: 応答作成失敗 $it") }.getOrNull())
     }
 
@@ -179,6 +197,19 @@ class HajikuAutofillService : AutofillService() {
             .apply { if (sub != null) setSubtitle(sub) }
             .setContentDescription(title).build()
         return InlinePresentation(content.slice, spec, false)
+    }
+
+    /** 🔑 だけの固定表示チップ */
+    private fun keyInline(spec: InlinePresentationSpec): InlinePresentation? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        if (!UiVersions.getVersions(spec.style).contains(UiVersions.INLINE_UI_VERSION_1)) return null
+        val res = resources.getIdentifier("ic_key", "drawable", packageName)
+        val attribution = PendingIntent.getActivity(this, 1, Intent(this, VaultActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE)
+        val content = InlineSuggestionUi.newContentBuilder(attribution)
+            .setStartIcon(Icon.createWithResource(packageName, res))
+            .setContentDescription("その他のパスワード").build()
+        return InlinePresentation(content.slice, spec, true)
     }
 
     companion object {

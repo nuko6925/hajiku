@@ -106,10 +106,26 @@ class AutofillBarView(context: Context, onKey: () -> Unit) : LinearLayout(contex
         scroll.visibility = VISIBLE
     }
 
-    /** 🔑 は常に右端。サービスの固定表示候補 (pinned) は候補の後ろに並べる */
-    fun setSuggestions(views: List<View>, pinned: List<View> = emptyList()) {
+    /**
+     * 🔑 は常に右端。
+     * pinnedAsKey: Hajiku 自身の固定候補 (= 🔑「その他のパスワード」) を 🔑 の位置に置く。
+     * 他サービスの固定候補は候補の後ろに並べる
+     */
+    fun setSuggestions(views: List<View>, pinned: List<View> = emptyList(), pinnedAsKey: Boolean = false) {
+        right.removeAllViews()
+        if (pinnedAsKey && pinned.isNotEmpty()) {
+            pinned.forEach { v ->
+                (v.parent as? ViewGroup)?.removeView(v)
+                right.addView(v, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    setMargins(0, 0, (4 * dp).toInt(), 0)
+                })
+            }
+        } else {
+            right.addView(key, LayoutParams((48 * dp).toInt(), LayoutParams.MATCH_PARENT))
+        }
         row.removeAllViews()
-        for (v in views + pinned) {
+        for (v in if (pinnedAsKey) views else views + pinned) {
             (v.parent as? ViewGroup)?.removeView(v)
             row.addView(v, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER_VERTICAL

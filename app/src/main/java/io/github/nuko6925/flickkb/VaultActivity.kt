@@ -44,6 +44,7 @@ class VaultActivity : Activity() {
         super.onCreate(savedInstanceState)
         // 一覧はスクショ・最近使ったアプリのサムネイルに写さない
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        lastCreated = System.currentTimeMillis()
         Diag.init(this)
         Diag.log("vault: 起動 pick=${intent.getBooleanExtra(EXTRA_PICK, false)}")
         title = "パスワード"
@@ -252,6 +253,8 @@ class VaultActivity : Activity() {
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 
     companion object {
+        /** キーボードから起動できたかの確認用 */
+        @Volatile var lastCreated = 0L
         const val EXTRA_PICK = "pick"
         const val EXTRA_PKG = "pkg"
         private const val REQ_CSV = 1
