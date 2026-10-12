@@ -142,6 +142,24 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         root.background = panelBg
     }
 
+    /**
+     * 欄の種類を自動入力のログイン欄判定に渡す (構造に欄の種類を載せないアプリ向け)。
+     * 自動入力の要求より先に呼ばれる onStartInput で
+     */
+    override fun onStartInput(info: EditorInfo, restarting: Boolean) {
+        super.onStartInput(info, restarting)
+        val cls = info.inputType and InputType.TYPE_MASK_CLASS
+        val v = info.inputType and InputType.TYPE_MASK_VARIATION
+        ImeField.set(info.packageName, when {
+            cls == InputType.TYPE_CLASS_TEXT && v in setOf(InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD, InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD) ||
+                cls == InputType.TYPE_CLASS_NUMBER && v == InputType.TYPE_NUMBER_VARIATION_PASSWORD -> ImeField.PASSWORD
+            cls == InputType.TYPE_CLASS_TEXT && v in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+                InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS) -> ImeField.EMAIL
+            else -> ImeField.OTHER
+        })
+    }
+
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         applyTheme()
