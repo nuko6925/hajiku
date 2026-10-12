@@ -23,7 +23,8 @@ import javax.crypto.spec.GCMParameterSpec
  * パスワード保管庫。
  * - パスワードは Android Keystore の AES-GCM 鍵で暗号化。鍵は「直近 60 秒以内に生体認証か端末ロック解除」が使用条件
  * - サイト・ユーザー名・最終使用日時は平文 (iOS と同じく、認証前の候補表示に使う)
- * - INTERNET 権限は無いので端末の外には出ない。自動バックアップ対象外 (allowBackup=false)
+ * - INTERNET 権限は無いので、ユーザーが書き出さない限り端末の外には出ない。自動バックアップ対象外 (allowBackup=false)
+ * - 書き出し・読み込みは VaultBackup (パスフレーズで暗号化) と VaultCsv (平文)
  */
 data class VaultEntry(
     val id: Long,
@@ -158,6 +159,63 @@ class VaultStore private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "vaul
             "id=?", arrayOf(id.toString()))
     }
 
+    /** 全件をパスワード込みの平文で (書き出し用)。要認証 */
+    fun exportAll(): List<PlainEntry> = readableDatabase.query("entries",
+        arrayOf("domain", "pkg", "username", "secret", "created", "last_used", "modified"),
+        null, null, null, null, "domain, pkg, username"
+    ).use { c ->
+        buildList {
+            while (c.moveToNext()) add(PlainEntry(c.getString(0), c.getString(1), c.getString(2),
+                VaultCrypto.decrypt(c.getBlob(3)), c.getLong(4), c.getLong(5), c.getLong(6)))
+        }
+    }
+
+    class RestoreResult(val added: Int, val updated: Int, val skipped: Int)
+
+    /**
+     * まとめて追加 (読み込み用)。同じサイト+ユーザー名が既にあれば
+     * - keepNewer = true (Hajiku のバックアップ): 変更日が新しいほうを残す
+     * - keepNewer = false (CSV。日時が無い): 読み込んだパスワードで上書き
+     * 途中で失敗したら 1 件も入れない。要認証
+     */
+    fun restore(list: List<PlainEntry>, keepNewer: Boolean): RestoreResult {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        var added = 0; var updated = 0; var skipped = 0
+        db.beginTransaction()
+        try {
+            for (e in list) {
+                val d = normalizeDomain(e.domain)
+                if ((d.isEmpty() && e.pkg.isEmpty()) || e.password.isEmpty()) { skipped++; continue }
+                val modified = e.modified.takeIf { it > 0 } ?: now
+                val existing = db.query("entries", arrayOf("id", "modified", "last_used"),
+                    "domain=? AND pkg=? AND username=?", arrayOf(d, e.pkg, e.username), null, null, null
+                ).use { if (it.moveToNext()) Triple(it.getLong(0), it.getLong(1), it.getLong(2)) else null }
+                if (existing != null) {
+                    if (keepNewer && existing.second >= modified) { skipped++; continue }
+                    db.update("entries", ContentValues().apply {
+                        put("secret", VaultCrypto.encrypt(e.password))
+                        put("modified", modified)
+                        put("last_used", maxOf(existing.third, e.lastUsed))
+                    }, "id=?", arrayOf(existing.first.toString()))
+                    updated++
+                } else {
+                    db.insert("entries", null, ContentValues().apply {
+                        put("domain", d); put("pkg", e.pkg); put("username", e.username)
+                        put("secret", VaultCrypto.encrypt(e.password))
+                        put("created", e.created.takeIf { it > 0 } ?: modified)
+                        put("last_used", e.lastUsed); put("modified", modified)
+                    })
+                    added++
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return RestoreResult(added, updated, skipped)
+    }
+
     companion object {
         @Volatile private var instance: VaultStore? = null
         fun get(ctx: Context): VaultStore = instance ?: synchronized(this) {
@@ -261,6 +319,28 @@ object VaultCsv {
             Row(u, r.getOrNull(user).orEmpty(), p)
         }
     }
+
+    /** Chrome の書き出しではアプリは android://<署名ハッシュ>@<パッケージ名>/ */
+    fun toEntry(r: Row, now: Long = System.currentTimeMillis()): PlainEntry {
+        val u = r.url.trim()
+        return if (u.startsWith("android://", ignoreCase = true)) {
+            PlainEntry("", Uri.parse(u).host.orEmpty(), r.username, r.password, now, 0, now)
+        } else {
+            PlainEntry(VaultStore.normalizeDomain(u), "", r.username, r.password, now, 0, now)
+        }
+    }
+
+    /** Chrome / Google パスワードマネージャーの形式 (iOS「パスワード」も読み込める) */
+    fun write(list: List<PlainEntry>): String = buildString {
+        append("name,url,username,password,note\n")
+        for (e in list) {
+            val url = if (e.domain.isNotEmpty()) "https://${e.domain}/" else "android://${e.pkg}/"
+            listOf(e.domain.ifEmpty { e.pkg }, url, e.username, e.password, "").joinTo(this, ",") { quote(it) }
+            append('\n')
+        }
+    }
+
+    private fun quote(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
 
     /** RFC 4180 程度: "" のエスケープ、引用符内の改行 */
     private fun records(s: String): List<List<String>> {

@@ -56,7 +56,8 @@ class VaultAuthActivity : Activity() {
                 override fun close() = cancel()
                 override fun fill(e: VaultEntry) = this@VaultAuthActivity.fill(e.id)
                 override fun withAuth(block: () -> Unit) = this@VaultAuthActivity.withAuth(block)
-                override fun importCsv() {}
+                override fun importFile() {}
+                override fun exportFile() {}
             })
         sheet = s
         val h = (resources.displayMetrics.heightPixels * 0.9f).toInt()
