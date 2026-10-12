@@ -117,8 +117,10 @@ class VaultSheetView(
         fun fill(e: VaultEntry)
         /** 認証済み (60 秒以内) なら即実行、切れていれば認証してから */
         fun withAuth(block: () -> Unit)
-        /** CSV 読み込み (一覧モードのみ) */
-        fun importCsv()
+        /** 読み込み: Hajiku の暗号化バックアップか CSV (一覧モードのみ) */
+        fun importFile()
+        /** 書き出し (一覧モードのみ) */
+        fun exportFile()
     }
 
     private val t = SheetTheme(context)
@@ -297,13 +299,22 @@ class VaultSheetView(
         for (group in listOf(m, o)) if (group.isNotEmpty()) listContent.addView(card().apply {
             group.forEachIndexed { i, e -> if (i > 0) sep(84f); addView(listRow(e)) }
         })
-        if (!pick && q.isEmpty()) listContent.addView(card().apply {
-            addView(TextView(context).apply {
-                text = "CSV から読み込む…"; textSize = 17f; setTextColor(t.blue)
+        if (!pick && q.isEmpty()) {
+            fun action(label: String, onClick: () -> Unit) = TextView(context).apply {
+                text = label; textSize = 17f; setTextColor(t.blue)
                 setPadding(px(18f), px(16f), px(18f), px(16f))
-                setOnClickListener { host.importCsv() }
+                setOnClickListener { onClick() }
+            }
+            listContent.addView(card().apply {
+                addView(action("パスワードを書き出す…") { host.exportFile() })
+                sep(18f)
+                addView(action("パスワードを読み込む…") { host.importFile() })
             })
-        })
+            listContent.addView(TextView(context).apply {
+                text = "Hajiku で書き出したファイルのほか、iOS「パスワード」・Chrome の CSV も読み込めます"
+                textSize = 12f; setTextColor(t.secondary); setPadding(px(36f), px(4f), px(36f), 0)
+            })
+        }
     }
 
     private fun listRow(e: VaultEntry): View = LinearLayout(context).apply {
