@@ -14,3 +14,4 @@ app/src/main/assets/conn.bin
 app/release/
 *.apk
 *.aab
+tools/__pycache__/

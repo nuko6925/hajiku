@@ -16,7 +16,8 @@ class Segment(
     val tail: String,
 )
 
-class Path(val segments: List<Segment>, val cost: Int) {
+/** lastRid: 最後の語の右ID (次単語予測に使う) */
+class Path(val segments: List<Segment>, val cost: Int, val lastRid: Int = -1) {
     val surface get() = segments.joinToString("") { it.surface }
 }
 
@@ -62,6 +63,9 @@ class Lattice(private val db: SQLiteDatabase, connFile: File, private val user: 
             }
         }
     }
+
+    /** 付属語 (助詞・助動詞など) の品詞か */
+    fun isFunc(id: Int) = id in func.indices && func[id]
 
     fun connCost(rid: Int, lid: Int): Int = conn.get(rid * n + lid).toInt()
 
@@ -111,7 +115,7 @@ class Lattice(private val db: SQLiteDatabase, connFile: File, private val user: 
             if (node.start < 0) {
                 // 文頭に着いた = 1案完成
                 val words = generateSequence(cur.tail) { it.tail }.map { it.node }.toList()
-                val path = Path(group(words), cur.g)
+                val path = Path(group(words), cur.g, words.lastOrNull()?.rid ?: -1)
                 if (seen.add(path.surface)) out.add(path)
                 continue
             }

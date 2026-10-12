@@ -42,7 +42,8 @@ class Converter(context: Context) {
         }.start()
     }
 
-    fun candidates(reading: String): List<Candidate> {
+    /** prevWord: 直前の英単語 (英字入力中の候補を文脈で並べ替える。"how ar" → are) */
+    fun candidates(reading: String, prevWord: String? = null): List<Candidate> {
         if (reading.isEmpty()) return emptyList()
         val out = LinkedHashMap<String, Candidate>()
         fun add(t: String, len: Int, learnable: Boolean = true, r: String? = null) {
@@ -137,6 +138,13 @@ class Converter(context: Context) {
                 }
                 learn.lookup(reading).forEach { add(it, full) }
                 user.lookup(reading.lowercase()).forEach { add(it, full) }
+                // 直前の単語に続きやすい語 (学習 → 例文の頻度)
+                if (prevWord != null) {
+                    val p = reading.lowercase()
+                    val prev = prevWord.lowercase()
+                    (learn.nextWords(prev, p) + englishNext(prev, p, 3))
+                        .forEach { add(case(fixI(it)), full, r = it) }
+                }
                 // 先頭付近に 先頭大文字 / 全部大文字 / 全角
                 add(reading.replaceFirstChar { it.uppercase() }, full)
                 add(reading.uppercase(), full)
@@ -244,6 +252,62 @@ class Converter(context: Context) {
             .distinctBy { it.second }.take(3).map { it.first to it.second }
     }
 
+    /**
+     * 英語の次単語予測: prev の次に来やすい語。学習した組 (新しい順) → 例文の頻度順
+     * @return 表示用 (i → I)
+     */
+    fun nextWords(prev: String, limit: Int = 8): List<String> {
+        val p = prev.lowercase()
+        return (learn.nextWords(p, "") + englishNext(p, "", limit)).distinct().take(limit).map(::fixI)
+    }
+
+    /**
+     * 日本語の次単語予測: 確定した語 (よみ, 表記) の後に続きやすい語。
+     * 学習した組 (新しい順) → その語の品詞に続きやすい付属語 (「今日」→ は・の・も)
+     */
+    fun nextJapanese(reading: String?, surface: String, limit: Int = 8): List<Candidate> {
+        val out = LinkedHashMap<String, Candidate>()
+        learn.nextWords(surface, "").forEach { out.getOrPut(it) { Candidate(it, 0, learnable = false) } }
+        val rid = ridOf(reading, surface)
+        val lat = lattice
+        if (rid >= 0 && lat != null && !lat.isFunc(rid)) {
+            val db = dict
+            if (db != null) runCatching {
+                db.rawQuery("SELECT surface, reading FROM jnext WHERE rid=? ORDER BY score LIMIT $limit",
+                    arrayOf(rid.toString())).use { c ->
+                    while (c.moveToNext()) out.getOrPut(c.getString(0)) { Candidate(c.getString(0), 0, false, c.getString(1)) }
+                }
+            }.onFailure { Log.w(TAG, "jnext failed", it) }
+        }
+        return out.values.take(limit)
+    }
+
+    /** 文の後 (。！？) の予測: 学習した語 → 接続詞 */
+    fun afterSentence(limit: Int = 10): List<Candidate> =
+        (learn.nextWords(SENTENCE_END, "") + CONJUNCTIONS).distinct().take(limit).map { Candidate(it, 0, learnable = false) }
+
+    /** 確定した語の右ID。辞書にそのままあれば自立語の項目を優先、なければ文変換の最後の語 */
+    private fun ridOf(reading: String?, surface: String): Int {
+        val db = dict ?: return -1
+        val lat = lattice ?: return -1
+        if (reading.isNullOrEmpty() || reading.length > 32) return -1
+        val rids = runCatching {
+            db.rawQuery("SELECT rid FROM dict WHERE reading=? AND surface=? ORDER BY cost LIMIT 8", arrayOf(reading, surface))
+                .use { c -> buildList { while (c.moveToNext()) add(c.getInt(0)) } }
+        }.getOrDefault(emptyList())
+        if (rids.isNotEmpty()) return rids.firstOrNull { !lat.isFunc(it) } ?: rids.first()
+        val p = runCatching { lat.best(reading) }.getOrNull() ?: return -1
+        return if (p.surface == surface) p.lastRid else -1
+    }
+
+    /** 次単語予測の学習 (prev → next) */
+    fun learnNext(prev: String, next: String) = learn.recordNext(prev.lowercase(), next.lowercase())
+
+    /** 例文の頻度表 (dict.db の en2) から prev の次に来る語。prefix で絞る */
+    private fun englishNext(prev: String, prefix: String, limit: Int): List<String> = query(
+        "SELECT next FROM en2 WHERE prev=? AND next>=? AND next<? ORDER BY cnt DESC LIMIT $limit",
+        arrayOf(prev.lowercase(), prefix, prefix + '\uFFFF'))
+
     private fun english(prefix: String): List<String> = query(
         "SELECT word FROM en WHERE word>=? AND word<? ORDER BY freq DESC LIMIT 20",
         arrayOf(prefix, prefix + '\uFFFF'))
@@ -262,6 +326,14 @@ class Converter(context: Context) {
 
     companion object {
         private const val TAG = "Converter"
+
+        /** 文の後の学習で「前の語」として使う印 (。！？ をまとめる) */
+        const val SENTENCE_END = "。"
+
+        /** 文の後の予測に出す接続詞 (話し言葉でよく使う順) */
+        private val CONJUNCTIONS = listOf(
+            "そして", "でも", "だから", "なので", "それで", "しかし", "ところで", "あと", "また", "それに", "つまり", "ちなみに",
+        )
         private val KAOMOJI = listOf(
             "(^_^)", "(*^^*)", "(^^;", "(>_<)", "(T_T)", "(´・ω・`)", "(・∀・)",
             "m(_ _)m", "(；ω；)", "ヽ(・∀・)ノ", "(｀・ω・´)", "(￣▽￣)", "(＾ｖ＾)",
@@ -426,12 +498,34 @@ object DictInstaller {
 }
 
 /** 確定履歴による簡易学習 */
-class LearningStore(ctx: Context) : SQLiteOpenHelper(ctx, "learn.db", null, 1) {
+class LearningStore(ctx: Context) : SQLiteOpenHelper(ctx, "learn.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE learn(reading TEXT, surface TEXT, cnt INTEGER, last INTEGER, PRIMARY KEY(reading, surface))")
+        createNext(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, o: Int, n: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, o: Int, n: Int) {
+        if (o < 2) createNext(db)
+    }
+
+    /** 英語の次単語の学習 (前の単語 → 次の単語) */
+    private fun createNext(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE bigram(prev TEXT, next TEXT, cnt INTEGER, last INTEGER, PRIMARY KEY(prev, next))")
+    }
+
+    /** prev の次に使った語 (prefix で始まるもの)。新しい順 */
+    fun nextWords(prev: String, prefix: String): List<String> =
+        readableDatabase.rawQuery(
+            "SELECT next FROM bigram WHERE prev=? AND next>=? AND next<? ORDER BY last DESC LIMIT 3",
+            arrayOf(prev, prefix, prefix + '\uFFFF')
+        ).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+
+    fun recordNext(prev: String, next: String) {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.execSQL("INSERT OR IGNORE INTO bigram VALUES(?,?,0,?)", arrayOf(prev, next, now))
+        db.execSQL("UPDATE bigram SET cnt=cnt+1, last=? WHERE prev=? AND next=?", arrayOf(now, prev, next))
+    }
 
     fun lookup(reading: String): List<String> =
         readableDatabase.rawQuery(

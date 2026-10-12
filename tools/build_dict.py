@@ -3,14 +3,17 @@
 
 出力 (app/src/main/assets/):
   dict.db  : dict(読み, コスト, 表記, 左ID, 右ID) / pos(品詞ID, 付属語フラグ) / en(英単語, 頻度)
+             / en2(前の英単語, 次の英単語, 回数) … 英語の次単語予測
+             / jnext(右ID, 表記, 読み, スコア) … 日本語の次単語予測 (確定した語の品詞に続きやすい付属語)
   conn.bin : 連接コスト行列 int16 LE [右ID(前) * N + 左ID(後)]、先頭 4byte に N
 
 usage:
   python3 tools/build_dict.py              # GitHub から取得
   python3 tools/build_dict.py --src DIR    # ローカルの dictionary_oss ディレクトリ
   --en FILE                                # 英単語頻度リスト (FrequencyWords 形式) をローカルから
+  --en2 FILE                               # 英語の例文 (Tatoeba の eng_sentences.tsv(.bz2)) をローカルから
 """
-import argparse, array, os, re, sqlite3, struct, sys, urllib.request
+import argparse, array, bz2, collections, os, re, sqlite3, struct, sys, urllib.request
 
 BASE = "https://raw.githubusercontent.com/google/mozc/master/src/data/dictionary_oss/"
 DATA = "https://raw.githubusercontent.com/google/mozc/master/src/data/"
@@ -21,6 +24,10 @@ FUZZY = str.maketrans("がぎぐげござじずぜぞだぢづでどばびぶべ
 FILES = [f"dictionary{i:02d}.txt" for i in range(10)]
 EN_URL = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_50k.txt"
 EN_WORD = re.compile(r"^[a-z][a-z']*$")
+EN2_URL = "https://downloads.tatoeba.org/exports/per_language/eng/eng_sentences.tsv.bz2"
+# 例文の区切り (句読点をまたいだ組は数えない) と単語
+EN2_CLAUSE = re.compile(r"[.,!?;:()\[\]{}\"“”…—–/]+|\s-\s")
+EN2_TOKEN = re.compile(r"[a-z]+(?:'[a-z]+)?")
 
 
 def read_text(src, name):
@@ -116,12 +123,95 @@ def en_words(path, limit):
     return out
 
 
+def gh_annotate(level, msg):
+    """GitHub Actions ではジョブの注釈 (Summary 画面) にも出す"""
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::{level}::{msg}")
+
+
+def en_bigrams(path, vocab, per_word, min_count):
+    """Tatoeba の英語例文から (前の単語, 次の単語, 回数)。どちらも vocab にある語だけ、前の単語ごとに上位 per_word 個"""
+    try:
+        if path:
+            raw = open(path, "rb").read()
+        else:
+            print("fetch eng_sentences.tsv.bz2", file=sys.stderr)
+            raw = urllib.request.urlopen(EN2_URL, timeout=120).read()
+    except Exception as e:  # 取得できなくても辞書は作る (次単語予測が出ないだけ)
+        msg = f"英語例文を取得できませんでした ({e})。次単語予測なしで続けます"
+        print("warning: " + msg, file=sys.stderr)
+        gh_annotate("warning", msg)
+        return []
+    if raw[:3] == b"BZh":
+        raw = bz2.decompress(raw)
+    counts = collections.Counter()
+    sentences = 0
+    for ln in raw.decode("utf-8", "replace").splitlines():
+        p = ln.split("\t")
+        text = (p[2] if len(p) >= 3 else p[-1]).lower().replace("’", "'").replace("‘", "'")
+        sentences += 1
+        for clause in EN2_CLAUSE.split(text):
+            toks = EN2_TOKEN.findall(clause)
+            for a, b in zip(toks, toks[1:]):
+                if a in vocab and b in vocab:
+                    counts[(a, b)] += 1
+    by_prev = collections.defaultdict(list)
+    for (a, b), c in counts.items():
+        if c >= min_count:
+            by_prev[a].append((c, b))
+    out = []
+    for a, lst in by_prev.items():
+        lst.sort(key=lambda x: (-x[0], x[1]))
+        out.extend((a, b, c) for c, b in lst[:per_word])
+    print(f"{sentences} english sentences, {len(out)} bigrams", file=sys.stderr)
+    gh_annotate("notice", f"英語の次単語予測: 例文 {sentences} 文から {len(out)} 組")
+    return out
+
+
+def ja_next(best, pos_func, pos_whole, conn, n, per_rid, per_lid):
+    """
+    品詞 (右ID) ごとに、続きやすい付属語 (助詞・助動詞・非自立・接尾) を連接コスト + 単語コストの小さい順に。
+    「今日」(名詞) → は・の・も・から …、「行き」(連用形) → たい・ます …
+    予測する語は活用しないか基本形のものだけ (「まし」「られ」のような途中の形は出さない)
+    """
+    by_lid = {}
+    for (r, s, l, rr), c in best.items():
+        if 0 <= l < n and 0 <= rr < n and pos_func[l] and pos_whole[rr] and KANA.match(r):
+            by_lid.setdefault(l, []).append((c, s, r))
+    for l in by_lid:
+        by_lid[l] = sorted(set(by_lid[l]))[:per_lid]
+    out = []
+    for rid in range(n):
+        if pos_func[rid]:
+            continue  # 付属語の後は予測しない (学習だけ)
+        scored = []
+        base = rid * n
+        for l, ws in by_lid.items():
+            k = conn[base + l]
+            for c, s, r in ws:
+                scored.append((k + c, s, r))
+        scored.sort()
+        seen = set()
+        for sc, s, r in scored:
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append((rid, s, r, sc))
+            if len(seen) >= per_rid:
+                break
+    return out
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser()
     ap.add_argument("--src")
     ap.add_argument("--en")
     ap.add_argument("--en-limit", type=int, default=40000)
+    ap.add_argument("--en2")
+    ap.add_argument("--en2-per-word", type=int, default=8, help="前の単語ごとに残す次の単語の数")
+    ap.add_argument("--en2-min-count", type=int, default=3)
+    ap.add_argument("--ja-next-per-pos", type=int, default=8, help="品詞ごとに残す次の付属語の数")
     ap.add_argument("--fuzzy-max-cost", type=int, default=7000,
                     help="ゆるい読みの索引に入れる語のコスト上限 (小さいほど辞書が小さい)")
     ap.add_argument("--out-dir", default=os.path.join(here, "..", "app/src/main/assets"))
@@ -142,10 +232,13 @@ def main():
 
     # --- 品詞: 付属語 (前の文節にくっつくもの) ---
     pos = []
+    whole = {}  # 品詞ID → 活用しないか基本形・体言接続 (次単語予測にそのまま出せる形。「静か」→「な」)
     for ln in read_text(a.src, "id.def").splitlines():
         i, name = ln.split(" ", 1)
         func = name.startswith(("助詞", "助動詞")) or "非自立" in name or "接尾" in name
         pos.append((int(i), 1 if func else 0))
+        f = name.split(",")
+        whole[int(i)] = len(f) < 6 or f[5] in ("*", "基本形", "体言接続")
 
     # --- 連接行列 ---
     lines = read_text(a.src, "connection_single_column.txt").split()
@@ -190,6 +283,21 @@ def main():
     print(f"{len(emo)} emoji/emoticon readings", file=sys.stderr)
     db.execute("CREATE TABLE en(word TEXT PRIMARY KEY, freq INTEGER NOT NULL) WITHOUT ROWID")
     db.executemany("INSERT INTO en VALUES(?,?)", sorted(en.items()))
+    en2 = en_bigrams(a.en2, en, a.en2_per_word, a.en2_min_count)
+    db.execute("""CREATE TABLE en2(prev TEXT NOT NULL, next TEXT NOT NULL, cnt INTEGER NOT NULL,
+        PRIMARY KEY(prev, next)) WITHOUT ROWID""")
+    db.executemany("INSERT INTO en2 VALUES(?,?,?)", sorted(en2))
+    pos_func = [False] * n
+    pos_whole = [False] * n
+    for i, f in pos:
+        if 0 <= i < n:
+            pos_func[i] = bool(f)
+            pos_whole[i] = whole.get(i, False)
+    jn = ja_next(best, pos_func, pos_whole, mat, n, a.ja_next_per_pos, 6)
+    db.execute("""CREATE TABLE jnext(rid INTEGER NOT NULL, surface TEXT NOT NULL, reading TEXT NOT NULL,
+        score INTEGER NOT NULL, PRIMARY KEY(rid, score, surface)) WITHOUT ROWID""")
+    db.executemany("INSERT INTO jnext VALUES(?,?,?,?)", jn)
+    print(f"{len(jn)} japanese next words", file=sys.stderr)
     db.execute("CREATE TABLE android_metadata(locale TEXT)")
     db.execute("INSERT INTO android_metadata VALUES('ja_JP')")
     db.commit()

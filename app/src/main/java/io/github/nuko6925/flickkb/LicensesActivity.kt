@@ -16,6 +16,7 @@ class LicensesActivity : Activity() {
         "FrequencyWords 英単語データ (CC BY-SA 4.0)" to "frequencywords-data.txt",
         "FrequencyWords" to "frequencywords-code.txt",
         "emoji-data" to "emoji-data.txt",
+        "Tatoeba 英語例文 (CC BY 2.0 FR)" to "tatoeba.txt",
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
