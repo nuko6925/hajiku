@@ -7,6 +7,8 @@ import android.content.Intent
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.CancellationSignal
+import android.os.Handler
+import android.os.Looper
 import android.service.autofill.AutofillService
 import android.service.autofill.Dataset
 import android.service.autofill.FillCallback
@@ -41,6 +43,26 @@ class LoginFields(
     val isLogin get() = password != null || (username != null && usernameStrong)
 }
 
+/**
+ * キーボードが受け取った今の入力欄の種類 (同一プロセス内)。
+ * Flutter 製アプリなどは自動入力の構造に inputType もヒントも載せないが、キーボードには正しく申告するので、
+ * フォーカス中の欄の判定に使う
+ */
+object ImeField {
+    const val OTHER = 0
+    const val PASSWORD = 1
+    const val EMAIL = 2
+
+    @Volatile private var pkg: String? = null
+    @Volatile private var kind = OTHER
+    @Volatile private var at = 0L
+
+    fun set(p: String?, k: Int) { pkg = p; kind = k; at = System.currentTimeMillis() }
+
+    /** 同じアプリで直近 (2 秒以内) に申告された種類。別の欄の古い申告を当てはめないよう短めに */
+    fun kindFor(p: String): Int = if (p == pkg && System.currentTimeMillis() - at < 2_000) kind else OTHER
+}
+
 /** Web サイトの申告 (webDomain) を信用するブラウザ。それ以外のアプリはパッケージ名で照合 */
 private val TRUSTED_BROWSERS = setOf(
     "com.android.chrome", "com.chrome.beta", "com.chrome.dev", "com.chrome.canary",
@@ -56,14 +78,19 @@ object LoginParser {
     /** 「id」は単語としてだけ (grid / android 等に反応しない) */
     private val USER_WORDS = Regex("user|mail|login|account|(^|[^a-z])id($|[^a-z])|ユーザー|メール|アカウント", RegexOption.IGNORE_CASE)
 
-    fun parse(structure: AssistStructure): LoginFields {
+    /** focused: フォーカス中の欄 (FillContext.focusedId)。キーボードの申告と合わせて判定する */
+    fun parse(structure: AssistStructure, focused: AutofillId? = null): LoginFields {
         val pkg = structure.activityComponent.packageName
+        val imeKind = if (focused != null) ImeField.kindFor(pkg) else ImeField.OTHER
+        fun isFocused(n: AssistStructure.ViewNode) = focused != null && n.autofillId == focused
+        var editableCount = 0
         var user: AssistStructure.ViewNode? = null
         var pass: AssistStructure.ViewNode? = null
         var lastText: AssistStructure.ViewNode? = null
         var domain: String? = null
 
         fun isPassword(n: AssistStructure.ViewNode): Boolean {
+            if (imeKind == ImeField.PASSWORD && isFocused(n)) return true
             if (n.autofillHints?.any { it.contains("password", true) } == true) return true
             val t = n.inputType
             val v = t and InputType.TYPE_MASK_VARIATION
@@ -75,6 +102,7 @@ object LoginParser {
 
         /** アプリ自身がユーザー名・メール欄だと申告している */
         fun isUserStrong(n: AssistStructure.ViewNode): Boolean {
+            if (imeKind == ImeField.EMAIL && isFocused(n)) return true
             if (n.autofillHints?.any { h -> listOf("username", "email", "phone").any { h.contains(it, true) } } == true) return true
             if (n.htmlInfo?.attributes?.any { it.first == "autocomplete" && (it.second == "username" || it.second == "email") } == true) return true
             val v = n.inputType and InputType.TYPE_MASK_VARIATION
@@ -92,6 +120,7 @@ object LoginParser {
             n.webDomain?.takeIf { it.isNotEmpty() }?.let { if (domain == null) domain = it }
             val editable = n.autofillType == View.AUTOFILL_TYPE_TEXT && n.autofillId != null
             if (editable && n.visibility == View.VISIBLE) {
+                editableCount++
                 when {
                     isPassword(n) -> if (pass == null) { pass = n; if (user == null) user = lastText }
                     pass == null && isUser(n) -> user = n
@@ -103,6 +132,8 @@ object LoginParser {
         for (i in 0 until structure.windowNodeCount) walk(structure.getWindowNodeAt(i).rootViewNode)
 
         val u = user
+        Diag.log("parse: 入力欄=$editableCount フォーカス=${focused != null} キーボード申告=" +
+            when (imeKind) { ImeField.PASSWORD -> "パスワード"; ImeField.EMAIL -> "メール"; else -> "なし" })
         return LoginFields(
             u?.autofillId, pass?.autofillId,
             domain?.takeIf { trustWebDomain(pkg) }, pkg,
@@ -123,9 +154,22 @@ class HajikuAutofillService : AutofillService() {
 
     override fun onConnected() { Diag.log("autofill: サービス接続") }
 
+    private val handler by lazy { Handler(Looper.getMainLooper()) }
+
     override fun onFillRequest(request: FillRequest, cancel: CancellationSignal, callback: FillCallback) {
-        val structure = request.fillContexts.lastOrNull()?.structure ?: return callback.onSuccess(null)
-        val f = LoginParser.parse(structure)
+        // キーボードの欄の申告 (onStartInput) がこの要求より後に来ることがあるので、少し待ってから判定する
+        handler.postDelayed({
+            if (cancel.isCanceled) return@postDelayed
+            runCatching { fill(request, callback) }.onFailure {
+                Diag.log("fill: 失敗 $it")
+                runCatching { callback.onSuccess(null) }
+            }
+        }, IME_WAIT_MS)
+    }
+
+    private fun fill(request: FillRequest, callback: FillCallback) {
+        val ctx = request.fillContexts.lastOrNull() ?: return callback.onSuccess(null)
+        val f = LoginParser.parse(ctx.structure, ctx.focusedId)
         val ids = listOfNotNull(f.username, f.password)
         Diag.log("fill: pkg=${f.pkg} domain=${f.rawDomain}(信用=${f.domain != null}) user欄=${f.username != null}(確実=${f.usernameStrong}) pass欄=${f.password != null}")
         // ログイン欄でなければ何も出さない (チャット欄などに 🔑 を出さない)
@@ -233,6 +277,7 @@ class HajikuAutofillService : AutofillService() {
 
     companion object {
         private const val MAX_DATASETS = 8
+        private const val IME_WAIT_MS = 250L
 
         fun isSelected(ctx: Context) =
             android.provider.Settings.Secure.getString(ctx.contentResolver, "autofill_service")
