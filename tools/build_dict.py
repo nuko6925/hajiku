@@ -122,6 +122,12 @@ def en_words(path, limit):
     return out
 
 
+def gh_annotate(level, msg):
+    """GitHub Actions ではジョブの注釈 (Summary 画面) にも出す"""
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::{level}::{msg}")
+
+
 def en_bigrams(path, vocab, per_word, min_count):
     """Tatoeba の英語例文から (前の単語, 次の単語, 回数)。どちらも vocab にある語だけ、前の単語ごとに上位 per_word 個"""
     try:
@@ -131,7 +137,9 @@ def en_bigrams(path, vocab, per_word, min_count):
             print("fetch eng_sentences.tsv.bz2", file=sys.stderr)
             raw = urllib.request.urlopen(EN2_URL, timeout=120).read()
     except Exception as e:  # 取得できなくても辞書は作る (次単語予測が出ないだけ)
-        print(f"warning: 英語例文を取得できませんでした ({e})。次単語予測なしで続けます", file=sys.stderr)
+        msg = f"英語例文を取得できませんでした ({e})。次単語予測なしで続けます"
+        print("warning: " + msg, file=sys.stderr)
+        gh_annotate("warning", msg)
         return []
     if raw[:3] == b"BZh":
         raw = bz2.decompress(raw)
@@ -155,6 +163,7 @@ def en_bigrams(path, vocab, per_word, min_count):
         lst.sort(key=lambda x: (-x[0], x[1]))
         out.extend((a, b, c) for c, b in lst[:per_word])
     print(f"{sentences} english sentences, {len(out)} bigrams", file=sys.stderr)
+    gh_annotate("notice", f"英語の次単語予測: 例文 {sentences} 文から {len(out)} 組")
     return out
 
 
