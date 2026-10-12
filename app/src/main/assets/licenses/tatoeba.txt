@@ -1,0 +1,15 @@
+English example sentences
+Source: Tatoeba (https://tatoeba.org) — exports/per_language/eng/eng_sentences.tsv.bz2
+        https://downloads.tatoeba.org/exports/per_language/eng/
+
+License: Creative Commons Attribution 2.0 France (CC BY 2.0 FR)
+         https://creativecommons.org/licenses/by/2.0/fr/
+         (some sentences are CC0 1.0)
+
+Changes made in Hajiku:
+- the sentences themselves are NOT included
+- only counts of adjacent word pairs are derived at build time
+  (tools/build_dict.py, en_bigrams): lowercased, split at punctuation,
+  limited to words in the English word list, at least 3 occurrences,
+  top 8 following words per word
+- stored as the "en2" table of dict.db

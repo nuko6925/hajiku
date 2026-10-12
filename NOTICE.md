@@ -9,3 +9,4 @@ Hajiku のソースコードは MIT License です([LICENSE](LICENSE))。
 | [Mozc](https://github.com/google/mozc) OSS 辞書・連接コスト行列・品詞定義・絵文字/顔文字データ | かな漢字変換、絵文字・顔文字候補 | BSD-3-Clause / IPAdic ライセンス / ICOT Free Software 条件 / 沖縄辞書ライセンス |
 | [FrequencyWords](https://github.com/hermitdave/FrequencyWords) en_50k | 英単語予測 | CC BY-SA 4.0(改変あり。英単語データ部分のみに適用) |
 | [emoji-data](https://github.com/iamcal/emoji-data) | 絵文字一覧 | MIT |
+| [Tatoeba](https://tatoeba.org) 英語例文 | 英語の次単語予測(例文から数えた単語の並びの頻度だけを収録。例文そのものは含まない) | CC BY 2.0 FR |

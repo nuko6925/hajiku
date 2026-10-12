@@ -42,7 +42,8 @@ class Converter(context: Context) {
         }.start()
     }
 
-    fun candidates(reading: String): List<Candidate> {
+    /** prevWord: 直前の英単語 (英字入力中の候補を文脈で並べ替える。"how ar" → are) */
+    fun candidates(reading: String, prevWord: String? = null): List<Candidate> {
         if (reading.isEmpty()) return emptyList()
         val out = LinkedHashMap<String, Candidate>()
         fun add(t: String, len: Int, learnable: Boolean = true, r: String? = null) {
@@ -137,6 +138,13 @@ class Converter(context: Context) {
                 }
                 learn.lookup(reading).forEach { add(it, full) }
                 user.lookup(reading.lowercase()).forEach { add(it, full) }
+                // 直前の単語に続きやすい語 (学習 → 例文の頻度)
+                if (prevWord != null) {
+                    val p = reading.lowercase()
+                    val prev = prevWord.lowercase()
+                    (learn.nextWords(prev, p) + englishNext(prev, p, 3))
+                        .forEach { add(case(fixI(it)), full, r = it) }
+                }
                 // 先頭付近に 先頭大文字 / 全部大文字 / 全角
                 add(reading.replaceFirstChar { it.uppercase() }, full)
                 add(reading.uppercase(), full)
@@ -243,6 +251,23 @@ class Converter(context: Context) {
         return hits.filter { it.third <= TYPO_MAX_COST }.sortedBy { it.third }
             .distinctBy { it.second }.take(3).map { it.first to it.second }
     }
+
+    /**
+     * 英語の次単語予測: prev の次に来やすい語。学習した組 (新しい順) → 例文の頻度順
+     * @return 表示用 (i → I)
+     */
+    fun nextWords(prev: String, limit: Int = 8): List<String> {
+        val p = prev.lowercase()
+        return (learn.nextWords(p, "") + englishNext(p, "", limit)).distinct().take(limit).map(::fixI)
+    }
+
+    /** 次単語予測の学習 (prev → next) */
+    fun learnNext(prev: String, next: String) = learn.recordNext(prev.lowercase(), next.lowercase())
+
+    /** 例文の頻度表 (dict.db の en2) から prev の次に来る語。prefix で絞る */
+    private fun englishNext(prev: String, prefix: String, limit: Int): List<String> = query(
+        "SELECT next FROM en2 WHERE prev=? AND next>=? AND next<? ORDER BY cnt DESC LIMIT $limit",
+        arrayOf(prev.lowercase(), prefix, prefix + '\uFFFF'))
 
     private fun english(prefix: String): List<String> = query(
         "SELECT word FROM en WHERE word>=? AND word<? ORDER BY freq DESC LIMIT 20",
@@ -426,12 +451,34 @@ object DictInstaller {
 }
 
 /** 確定履歴による簡易学習 */
-class LearningStore(ctx: Context) : SQLiteOpenHelper(ctx, "learn.db", null, 1) {
+class LearningStore(ctx: Context) : SQLiteOpenHelper(ctx, "learn.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE learn(reading TEXT, surface TEXT, cnt INTEGER, last INTEGER, PRIMARY KEY(reading, surface))")
+        createNext(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, o: Int, n: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, o: Int, n: Int) {
+        if (o < 2) createNext(db)
+    }
+
+    /** 英語の次単語の学習 (前の単語 → 次の単語) */
+    private fun createNext(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE bigram(prev TEXT, next TEXT, cnt INTEGER, last INTEGER, PRIMARY KEY(prev, next))")
+    }
+
+    /** prev の次に使った語 (prefix で始まるもの)。新しい順 */
+    fun nextWords(prev: String, prefix: String): List<String> =
+        readableDatabase.rawQuery(
+            "SELECT next FROM bigram WHERE prev=? AND next>=? AND next<? ORDER BY last DESC LIMIT 3",
+            arrayOf(prev, prefix, prefix + '\uFFFF')
+        ).use { c -> buildList { while (c.moveToNext()) add(c.getString(0)) } }
+
+    fun recordNext(prev: String, next: String) {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.execSQL("INSERT OR IGNORE INTO bigram VALUES(?,?,0,?)", arrayOf(prev, next, now))
+        db.execSQL("UPDATE bigram SET cnt=cnt+1, last=? WHERE prev=? AND next=?", arrayOf(now, prev, next))
+    }
 
     fun lookup(reading: String): List<String> =
         readableDatabase.rawQuery(

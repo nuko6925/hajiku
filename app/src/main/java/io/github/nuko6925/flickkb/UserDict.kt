@@ -67,6 +67,30 @@ class UserDict private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "user.d
         return ok
     }
 
+    class ImportResult(val added: Int, val duplicate: Int, val invalid: Int)
+
+    /** まとめて追加 (読み込み用)。同じ よみ+単語 は飛ばす。よみが不正な行は数えて飛ばす */
+    fun addAll(words: List<Pair<String, String>>): ImportResult {
+        var added = 0; var dup = 0; var invalid = 0
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for ((r, s) in words) {
+                val surface = s.trim()
+                if (surface.isEmpty() || !isValidReading(r)) { invalid++; continue }
+                val ok = db.insertWithOnConflict("words", null, android.content.ContentValues().apply {
+                    put("reading", normalize(r)); put("surface", surface)
+                }, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+                if (ok) added++ else dup++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        if (added > 0) version.incrementAndGet()
+        return ImportResult(added, dup, invalid)
+    }
+
     fun delete(id: Long) {
         writableDatabase.delete("words", "id=?", arrayOf(id.toString()))
         version.incrementAndGet()
@@ -93,6 +117,99 @@ class UserDict private constructor(ctx: Context) : SQLiteOpenHelper(ctx, "user.d
 
         fun isValidReading(r: String) = normalize(r).let { n ->
             n.isNotEmpty() && n.all { Converter.isHiragana(it) || it in 'a'..'z' || it in '0'..'9' || it in "-_'" }
+        }
+    }
+}
+
+/**
+ * ユーザ辞書のファイル。
+ * 書き出し: Google 日本語入力 / Mozc と同じ「よみ<TAB>単語<TAB>品詞<TAB>コメント」(UTF-8)。
+ * 読み込み: 上記のほか Microsoft IME・ATOK のテキスト (UTF-16 可、! で始まる行は見出し)、
+ *          Gboard の書き出し (zip / dictionary.txt)、Mac の「テキスト置換」(.plist。iPhone のユーザ辞書と同じもの)
+ */
+object UserDictFile {
+    fun write(words: List<UserWord>): String = buildString {
+        for (w in words) append(clean(w.reading)).append('\t').append(clean(w.surface)).append("\t名詞\t\n")
+    }
+
+    /** タブ・改行は入れられないので空白に */
+    private fun clean(s: String) = s.replace(Regex("[\t\r\n]"), " ")
+
+    /** (よみ, 単語)。形式が分からなければ空 */
+    fun parse(bytes: ByteArray): List<Pair<String, String>> {
+        if (bytes.size >= 4 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) return parseZip(bytes)
+        val text = decode(bytes)
+        if (text.trimStart().startsWith("<?xml") || "<plist" in text.take(500)) return parsePlist(text)
+        return parseTsv(text)
+    }
+
+    private fun parseZip(bytes: ByteArray): List<Pair<String, String>> {
+        java.util.zip.ZipInputStream(bytes.inputStream()).use { z ->
+            while (true) {
+                val e = z.nextEntry ?: break
+                if (!e.isDirectory && e.name.endsWith(".txt", ignoreCase = true)) {
+                    return parseTsv(decode(z.readBytes()))
+                }
+            }
+        }
+        return emptyList()
+    }
+
+    /** BOM → UTF-8 として正しいか → 改行・タブが 2 バイトなら UTF-16 → それ以外は Shift_JIS (古い IME の書き出し) */
+    private fun decode(b: ByteArray): String {
+        fun u(i: Int) = b[i].toInt() and 0xFF
+        return when {
+            b.size >= 3 && u(0) == 0xEF && u(1) == 0xBB && u(2) == 0xBF -> String(b, 3, b.size - 3, Charsets.UTF_8)
+            b.size >= 2 && u(0) == 0xFF && u(1) == 0xFE -> String(b, 2, b.size - 2, Charsets.UTF_16LE)
+            b.size >= 2 && u(0) == 0xFE && u(1) == 0xFF -> String(b, 2, b.size - 2, Charsets.UTF_16BE)
+            else -> strictUtf8(b) ?: run {
+                val ctl = setOf(0x09, 0x0A, 0x0D)
+                val n = minOf(b.size, 4096) and 1.inv()
+                val le = (0 until n step 2).count { u(it) in ctl && u(it + 1) == 0 }
+                val be = (0 until n step 2).count { u(it) == 0 && u(it + 1) in ctl }
+                when {
+                    le > 0 && le >= be -> String(b, Charsets.UTF_16LE)
+                    be > 0 -> String(b, Charsets.UTF_16BE)
+                    else -> String(b, java.nio.charset.Charset.forName("windows-31j"))
+                }
+            }
+        }
+    }
+
+    private fun strictUtf8(b: ByteArray): String? = runCatching {
+        Charsets.UTF_8.newDecoder()
+            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            .decode(java.nio.ByteBuffer.wrap(b)).toString()
+    }.getOrNull()
+
+    private fun parseTsv(text: String): List<Pair<String, String>> = text.lineSequence()
+        .map { it.trimEnd('\r') }
+        .filter { it.isNotBlank() && !it.startsWith("!") && !it.startsWith("#") }
+        .mapNotNull { ln ->
+            val p = ln.split('\t')
+            if (p.size < 2) null else p[0].trim() to p[1].trim()
+        }
+        .toList()
+
+    private val PLIST_DICT = Regex("<dict>(.*?)</dict>", RegexOption.DOT_MATCHES_ALL)
+    private val PLIST_PAIR = Regex("<key>\\s*(.*?)\\s*</key>\\s*<string>(.*?)</string>", RegexOption.DOT_MATCHES_ALL)
+
+    /** Mac の「テキスト置換」: [{phrase: 単語, shortcut: よみ}, …] */
+    private fun parsePlist(text: String): List<Pair<String, String>> = PLIST_DICT.findAll(text).mapNotNull { d ->
+        val kv = PLIST_PAIR.findAll(d.groupValues[1]).associate { it.groupValues[1] to unescape(it.groupValues[2]) }
+        val phrase = kv["phrase"] ?: return@mapNotNull null
+        val shortcut = kv["shortcut"] ?: return@mapNotNull null
+        shortcut to phrase
+    }.toList()
+
+    private fun unescape(s: String) = Regex("&(#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos);").replace(s) { m ->
+        when (val e = m.groupValues[1]) {
+            "amp" -> "&"; "lt" -> "<"; "gt" -> ">"; "quot" -> "\""; "apos" -> "'"
+            else -> {
+                val cp = if (e.startsWith("#x")) e.substring(2).toInt(16) else e.substring(1).toInt()
+                String(Character.toChars(cp))
+            }
         }
     }
 }
