@@ -57,12 +57,16 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     private val composer = Composer()
     private var cands: List<Candidate> = emptyList()
 
-    /** cands が英語の次単語予測 (未確定なし) */
+    /** cands が次単語予測 (未確定なし) */
     private var predicting = false
+    /** 日本語の予測 (空白を付けずに入力) */
+    private var predJa = false
+    /** 最後に確定した (よみ, 表記)。カーソルがその直後にあれば日本語の次単語予測に使う */
+    private var lastCommit: Pair<String?, String>? = null
     /** 次単語予測の前の単語と、確定時に前に空白が要るか ("how" の直後なら " are ") */
     private var predPrev: String? = null
     private var predNeedSpace = false
-    /** 英字入力中の文脈 (未確定の直前の英単語)。ctxValid = 未確定の開始時に読み取り済み */
+    /** 入力中の文脈 (未確定の直前の英単語 / 確定した日本語の語 / 文末の印)。ctxValid = 未確定の開始時に読み取り済み */
     private var ctxWord: String? = null
     private var ctxValid = false
     private var selected = -1
@@ -367,6 +371,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         composingShown = false
         predicting = false
         ctxValid = false
+        lastCommit = null
     }
 
     override fun onUpdateSelection(
@@ -493,7 +498,12 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             KeyType.ENTER -> edit {
                 when {
                     selected >= 0 -> commitCandidateInBatch(selected)
-                    !composer.isEmpty -> { learnNextWord(composer.text); flushDirect() }
+                    !composer.isEmpty -> {
+                        val t = composer.text
+                        learnNextWord(t)
+                        flushDirect()
+                        lastCommit = t to t
+                    }
                     else -> enterAction()
                 }
                 updateUi()
@@ -634,7 +644,11 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             ctxValid = false
         } else if (!ctxValid) {
             // 未確定の 1 文字目: まだエディタに未確定が出ていないので、カーソル直前がそのまま文脈
-            ctxWord = if (direct) null else englishWordBeforeCursor()?.takeIf { it.second }?.first
+            ctxWord = when {
+                direct -> null
+                keyboard.mode == Mode.KANA -> japaneseContext()
+                else -> englishWordBeforeCursor()?.takeIf { it.second }?.first
+            }
             ctxValid = true
         }
         cands = if (direct || composer.isEmpty) emptyList() else converter.candidates(composer.text, ctxWord)
@@ -681,15 +695,18 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     private fun commitCandidateInBatch(i: Int) {
         val c = cands.getOrNull(i) ?: return
         if (predicting) {
-            // 次単語予測: iOS と同じく後ろに空白を付ける (続けて次の予測が出る)
-            currentInputConnection?.commitText((if (predNeedSpace) " " else "") + c.text + " ", 1)
+            // 英語は iOS と同じく後ろに空白を付ける。どちらも続けて次の予測が出る
+            val t = if (predJa) c.text else (if (predNeedSpace) " " else "") + c.text + " "
+            currentInputConnection?.commitText(t, 1)
             predPrev?.let { if (!noLearn) converter.learnNext(it, c.text) }
+            lastCommit = c.reading to c.text
             clearPredictions()
             return
         }
         val typed = composer.text.substring(0, c.readingLen)
         if (c.readingLen == composer.length) learnNextWord(c.text)
         currentInputConnection?.commitText(c.text, 1)
+        lastCommit = (c.reading ?: typed) to c.text
         composingShown = false
         // 残りの未確定は確定した文字列の直後から始まる
         if (composeStart >= 0) composeStart += c.text.length
@@ -699,7 +716,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         afterInput()
     }
 
-    // ---- 英語の次単語予測 ----
+    // ---- 次単語予測 (英語・日本語) ----
 
     /** カーソル直前の英単語と、その後ろに空白が 1 つあるか。("how " → how, true / "how" → how, false) */
     private fun englishWordBeforeCursor(): Pair<String, Boolean>? {
@@ -708,17 +725,40 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         return m.groupValues[1] to m.groupValues[2].isNotEmpty()
     }
 
+    /** 日本語の文脈: 文末 (。！？) の直後なら印、最後に確定した語の直後ならその語 */
+    private fun japaneseContext(): String? {
+        val before = currentInputConnection?.getTextBeforeCursor(48, 0)?.toString() ?: return null
+        if (before.isEmpty()) return null
+        if (before.last() in SENTENCE_ENDS) return Converter.SENTENCE_END
+        return lastCommit?.second?.takeIf { it.isNotEmpty() && before.endsWith(it) }
+    }
+
     private fun updatePredictions() {
         if (!::keyboard.isInitialized) return
-        val ok = keyboard.mode == Mode.ALPHA && !direct && !loginField && composer.isEmpty &&
-            inlineViews.isEmpty() && pinnedViews.isEmpty()
-        val w = if (ok) englishWordBeforeCursor() else null
-        val next = w?.let { converter.nextWords(it.first) }.orEmpty()
-        if (next.isEmpty()) { clearPredictions(); return }
+        val ok = !direct && !loginField && composer.isEmpty && inlineViews.isEmpty() && pinnedViews.isEmpty()
+        var prev: String? = null
+        var list: List<Candidate> = emptyList()
+        var needSpace = false
+        if (ok && keyboard.mode == Mode.ALPHA) {
+            englishWordBeforeCursor()?.let { w ->
+                prev = w.first
+                needSpace = !w.second
+                list = converter.nextWords(w.first).map { Candidate(it, 0, learnable = false) }
+            }
+        } else if (ok && keyboard.mode == Mode.KANA) {
+            prev = japaneseContext()
+            list = when (val p = prev) {
+                null -> emptyList()
+                Converter.SENTENCE_END -> converter.afterSentence()
+                else -> converter.nextJapanese(lastCommit?.first, p)
+            }
+        }
+        if (prev == null || list.isEmpty()) { clearPredictions(); return }
         predicting = true
-        predPrev = w!!.first
-        predNeedSpace = !w.second
-        cands = next.map { Candidate(it, 0, learnable = false) }
+        predJa = keyboard.mode == Mode.KANA
+        predPrev = prev
+        predNeedSpace = needSpace
+        cands = list
         selected = -1
         updateUi()
     }
@@ -731,10 +771,13 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         updateUi()
     }
 
-    /** 英単語を確定する時: 直前の英単語 → この語 を学習 */
+    /** 語を確定する時: 直前の語 (文脈) → この語 を学習 */
     private fun learnNextWord(word: String) {
         val prev = ctxWord ?: return
-        if (!noLearn && ENGLISH_WORD.matches(word)) converter.learnNext(prev, word)
+        if (noLearn) return
+        val ok = if (keyboard.mode == Mode.KANA) word.isNotBlank() && word.length <= 24 && '\n' !in word
+            else ENGLISH_WORD.matches(word)
+        if (ok) converter.learnNext(prev, word)
     }
 
     private fun enterAction() {
@@ -781,5 +824,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         /** 英単語 (前が英数字でない) + 空白 0〜1 個 で終わる */
         private val PREV_WORD = Regex("(?<![A-Za-z0-9'])([A-Za-z]+(?:'[A-Za-z]+)?)( ?)$")
         private val ENGLISH_WORD = Regex("[A-Za-z]+(?:'[A-Za-z]+)?")
+        /** この文字の後は「文の後」の予測 (接続詞) */
+        private const val SENTENCE_ENDS = "。．！？!?"
     }
 }

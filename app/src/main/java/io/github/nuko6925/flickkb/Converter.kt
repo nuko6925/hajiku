@@ -261,6 +261,45 @@ class Converter(context: Context) {
         return (learn.nextWords(p, "") + englishNext(p, "", limit)).distinct().take(limit).map(::fixI)
     }
 
+    /**
+     * 日本語の次単語予測: 確定した語 (よみ, 表記) の後に続きやすい語。
+     * 学習した組 (新しい順) → その語の品詞に続きやすい付属語 (「今日」→ は・の・も)
+     */
+    fun nextJapanese(reading: String?, surface: String, limit: Int = 8): List<Candidate> {
+        val out = LinkedHashMap<String, Candidate>()
+        learn.nextWords(surface, "").forEach { out.getOrPut(it) { Candidate(it, 0, learnable = false) } }
+        val rid = ridOf(reading, surface)
+        val lat = lattice
+        if (rid >= 0 && lat != null && !lat.isFunc(rid)) {
+            val db = dict
+            if (db != null) runCatching {
+                db.rawQuery("SELECT surface, reading FROM jnext WHERE rid=? ORDER BY score LIMIT $limit",
+                    arrayOf(rid.toString())).use { c ->
+                    while (c.moveToNext()) out.getOrPut(c.getString(0)) { Candidate(c.getString(0), 0, false, c.getString(1)) }
+                }
+            }.onFailure { Log.w(TAG, "jnext failed", it) }
+        }
+        return out.values.take(limit)
+    }
+
+    /** 文の後 (。！？) の予測: 学習した語 → 接続詞 */
+    fun afterSentence(limit: Int = 10): List<Candidate> =
+        (learn.nextWords(SENTENCE_END, "") + CONJUNCTIONS).distinct().take(limit).map { Candidate(it, 0, learnable = false) }
+
+    /** 確定した語の右ID。辞書にそのままあれば自立語の項目を優先、なければ文変換の最後の語 */
+    private fun ridOf(reading: String?, surface: String): Int {
+        val db = dict ?: return -1
+        val lat = lattice ?: return -1
+        if (reading.isNullOrEmpty() || reading.length > 32) return -1
+        val rids = runCatching {
+            db.rawQuery("SELECT rid FROM dict WHERE reading=? AND surface=? ORDER BY cost LIMIT 8", arrayOf(reading, surface))
+                .use { c -> buildList { while (c.moveToNext()) add(c.getInt(0)) } }
+        }.getOrDefault(emptyList())
+        if (rids.isNotEmpty()) return rids.firstOrNull { !lat.isFunc(it) } ?: rids.first()
+        val p = runCatching { lat.best(reading) }.getOrNull() ?: return -1
+        return if (p.surface == surface) p.lastRid else -1
+    }
+
     /** 次単語予測の学習 (prev → next) */
     fun learnNext(prev: String, next: String) = learn.recordNext(prev.lowercase(), next.lowercase())
 
@@ -287,6 +326,14 @@ class Converter(context: Context) {
 
     companion object {
         private const val TAG = "Converter"
+
+        /** 文の後の学習で「前の語」として使う印 (。！？ をまとめる) */
+        const val SENTENCE_END = "。"
+
+        /** 文の後の予測に出す接続詞 (話し言葉でよく使う順) */
+        private val CONJUNCTIONS = listOf(
+            "そして", "でも", "だから", "なので", "それで", "しかし", "ところで", "あと", "また", "それに", "つまり", "ちなみに",
+        )
         private val KAOMOJI = listOf(
             "(^_^)", "(*^^*)", "(^^;", "(>_<)", "(T_T)", "(´・ω・`)", "(・∀・)",
             "m(_ _)m", "(；ω；)", "ヽ(・∀・)ノ", "(｀・ω・´)", "(￣▽￣)", "(＾ｖ＾)",
