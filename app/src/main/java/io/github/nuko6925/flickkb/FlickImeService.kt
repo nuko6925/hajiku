@@ -187,24 +187,13 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
             InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD,
         ) || cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
-        val alphaVariation = variation in setOf(
-            InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
-            InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
-            InputType.TYPE_TEXT_VARIATION_URI,
-        )
         passwordField = cls == InputType.TYPE_CLASS_TEXT && password
         loginField = passwordField || variation in setOf(
             InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
         )
         shift = 0
-        keyboard.mode = when {
-            cls == InputType.TYPE_CLASS_NUMBER || cls == InputType.TYPE_CLASS_PHONE ||
-                cls == InputType.TYPE_CLASS_DATETIME -> Mode.NUM
-            passwordField -> Mode.QWERTY  // iOS と同じくパスワード欄は QWERTY
-            cls == InputType.TYPE_CLASS_TEXT && alphaVariation -> Mode.ALPHA
-            else -> Mode.KANA
-        }
+        keyboard.mode = defaultMode(info)
         // 🔑 から戻ってきた時の入力
         handler.post { applyPendingFill() }
         // パスワード入力中はキーボードをスクショ・画面録画に写さない
@@ -215,6 +204,40 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         direct = password || cls != InputType.TYPE_CLASS_TEXT || info.inputType == InputType.TYPE_NULL
         noLearn = password || (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
         updateUi()
+    }
+
+    /** 入力欄の種類ごとの最初の配列 (普通の欄は日本語) */
+    private fun defaultMode(info: EditorInfo?): Mode {
+        val t = info?.inputType ?: return Mode.KANA
+        val cls = t and InputType.TYPE_MASK_CLASS
+        val v = t and InputType.TYPE_MASK_VARIATION
+        return when {
+            cls == InputType.TYPE_CLASS_NUMBER || cls == InputType.TYPE_CLASS_PHONE ||
+                cls == InputType.TYPE_CLASS_DATETIME -> Mode.NUM
+            // iOS と同じくパスワード欄は QWERTY
+            cls == InputType.TYPE_CLASS_TEXT && v in setOf(InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD, InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD) -> Mode.QWERTY
+            cls == InputType.TYPE_CLASS_TEXT && v in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+                InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_URI) -> Mode.ALPHA
+            else -> Mode.KANA
+        }
+    }
+
+    /**
+     * キーボードが画面に出るたびに最初の配列へ戻す。
+     * 事前描画などで onStartInputView が呼ばれずに再表示されると、前回の配列のままになるため
+     */
+    override fun onWindowShown() {
+        super.onWindowShown()
+        if (!::keyboard.isInitialized || !composer.isEmpty) return
+        val m = defaultMode(currentInputEditorInfo)
+        if (keyboard.mode != m) {
+            Diag.log("ime: 表示時に配列を戻す ${keyboard.mode} → $m")
+            keyboard.mode = m
+            shift = 0
+            clearPredictions()
+            updateUi()
+        }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
