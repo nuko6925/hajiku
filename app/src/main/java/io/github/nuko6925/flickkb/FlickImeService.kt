@@ -803,16 +803,31 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         if (ok) converter.learnNext(prev, word)
     }
 
+    /**
+     * 未確定なしの改行キー。
+     * - 改行できる欄: 改行
+     * - 1 行の欄で「検索」「送信」「次へ」などの指定あり: その動作 (アプリに任せる)
+     * - 1 行の欄で指定なし・「完了」: アプリに Enter / 完了を伝えてからキーボードを閉じる
+     *   (iOS の Return と同じく入力を終える。フォーカスを外すのはアプリ側の権限なので、キーボードは閉じるだけ)
+     */
     private fun enterAction() {
         val info = currentInputEditorInfo
         val action = info?.imeOptions?.and(EditorInfo.IME_MASK_ACTION) ?: EditorInfo.IME_ACTION_NONE
         val noEnterAction = info != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0
         val multiLine = info != null && (info.inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE) != 0
-        if (!multiLine && !noEnterAction && action != EditorInfo.IME_ACTION_NONE &&
-            action != EditorInfo.IME_ACTION_UNSPECIFIED) {
-            currentInputConnection?.performEditorAction(action)
-        } else {
-            sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
+        val textField = info != null && (info.inputType and InputType.TYPE_MASK_CLASS) != InputType.TYPE_NULL
+        when {
+            multiLine || !textField -> sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
+            !noEnterAction && action == EditorInfo.IME_ACTION_DONE -> {
+                currentInputConnection?.performEditorAction(action)
+                requestHideSelf(0)
+            }
+            !noEnterAction && action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED ->
+                currentInputConnection?.performEditorAction(action)
+            else -> {
+                sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
+                requestHideSelf(0)
+            }
         }
     }
 
