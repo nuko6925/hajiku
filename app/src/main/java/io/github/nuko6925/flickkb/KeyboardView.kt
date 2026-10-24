@@ -8,6 +8,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
@@ -139,6 +140,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         var lastY = y0
         var accX = 0f
         var accY = 0f
+        /** トラックパッド中に指がキーボードの端にある方向 (-1 / 0 / 1)。0 以外なら送り続ける */
+        var edgeX = 0
+        var edgeY = 0
+        var edgeSince = 0L
     }
 
     private var active: Touch? = null
@@ -167,6 +172,18 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             val t = active ?: return
             listener.onFunction(t.key)
             handler.postDelayed(this, 60)
+        }
+    }
+
+    /** トラックパッドで指が端にある間、その方向へカーソルを送り続ける (最初はゆっくり、続けると速く) */
+    private val edgeRunnable = object : Runnable {
+        override fun run() {
+            val t = active ?: return
+            if (!t.trackpad || (t.edgeX == 0 && t.edgeY == 0)) return
+            listener.onCursorMove(t.edgeX, t.edgeY)
+            performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            val held = SystemClock.uptimeMillis() - t.edgeSince
+            handler.postDelayed(this, if (held > EDGE_FAST_AFTER_MS) EDGE_FAST_MS else EDGE_SLOW_MS)
         }
     }
 
@@ -247,6 +264,28 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         while (t.accY >= stepY) { listener.onCursorMove(0, 1); t.accY -= stepY; moved = true }
         while (t.accY <= -stepY) { listener.onCursorMove(0, -1); t.accY += stepY; moved = true }
         if (moved) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        updateEdge(t, x, y)
+    }
+
+    /**
+     * 左右はキーボードの端 (EDGE_DP 以内か外)、上下はキーボードの外に指があれば端とみなす
+     * (下の段の空白キーから始めるので、上下は内側に余白を取らない)
+     */
+    private fun updateEdge(t: Touch, x: Float, y: Float) {
+        val edge = EDGE_DP * dp
+        val ex = when { x <= edge -> -1; x >= width - edge -> 1; else -> 0 }
+        val ey = when { y < 0 -> -1; y > height -> 1; else -> 0 }
+        if (ex == t.edgeX && ey == t.edgeY) return
+        val wasIdle = t.edgeX == 0 && t.edgeY == 0
+        t.edgeX = ex
+        t.edgeY = ey
+        if (ex == 0 && ey == 0) {
+            handler.removeCallbacks(edgeRunnable)
+        } else if (wasIdle) {
+            t.edgeSince = SystemClock.uptimeMillis()
+            handler.removeCallbacks(edgeRunnable)
+            handler.postDelayed(edgeRunnable, EDGE_START_MS)
+        }
     }
 
     private fun direction(t: Touch, x: Float, y: Float): Int {
@@ -579,5 +618,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
     companion object {
         /** 文字キーを長押しして十字ガイドが出るまで */
         private const val GUIDE_DELAY_MS = 600L
+        /** トラックパッドの端の幅 */
+        private const val EDGE_DP = 20
+        /** 端に着いてから送り始めるまで / 送る間隔 (最初) / 送る間隔 (EDGE_FAST_AFTER_MS 以降) */
+        private const val EDGE_START_MS = 250L
+        private const val EDGE_SLOW_MS = 110L
+        private const val EDGE_FAST_MS = 45L
+        private const val EDGE_FAST_AFTER_MS = 1200L
     }
 }
