@@ -3,7 +3,6 @@ package io.github.nuko6925.flickkb
 import android.content.res.Configuration
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Build
 import android.os.Handler
@@ -78,7 +77,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     private var fullwidthSpace = false
 
     /** iOS 風の角丸パネル。角の外側は透過してアプリが見える */
-    private val panelBg = GradientDrawable()
+    private val panelBg = PanelBackground()
     private var bottomRadius = 0f
 
     private fun radii(): FloatArray {
@@ -144,13 +143,18 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     }
 
     private fun applyTheme() {
-        val t = KbTheme(isDark())
+        // 背景を設定していれば、その明るさに合わせてキー・文字の配色を選ぶ
+        val bg = KbBackground.load(this)
+        val t = KbTheme(bg.dark ?: isDark())
         keyboard.theme = t
         candBar.theme = t
         emojiPanel.theme = t
         candPanel.theme = t
         autofillBar.theme = t
-        panelBg.setColor(t.bg)
+        panelBg.color = if (bg.mode == KbBackground.COLOR) bg.color else t.bg
+        panelBg.bitmap = bg.bitmap
+        val a = (bg.scrim * 255).toInt().coerceIn(0, 255)
+        panelBg.scrim = if (a == 0) 0 else (a shl 24) or (if (bg.dark == true) 0x000000 else 0xFFFFFF)
         panelBg.cornerRadii = radii()
         root.background = panelBg
     }
