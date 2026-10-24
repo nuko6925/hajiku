@@ -145,7 +145,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     private fun applyTheme() {
         // 背景を設定していれば、その明るさに合わせてキー・文字の配色を選ぶ
         val bg = KbBackground.load(this)
-        val t = KbTheme(bg.dark ?: isDark())
+        // 背景を設定したらキーを半透明に (画像ならキーの下にぼかした背景を敷く)
+        val t = KbTheme(bg.dark ?: isDark(), glass = bg.mode != KbBackground.DEFAULT)
         keyboard.theme = t
         candBar.theme = t
         emojiPanel.theme = t
@@ -153,6 +154,9 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         autofillBar.theme = t
         panelBg.color = if (bg.mode == KbBackground.COLOR) bg.color else t.bg
         panelBg.bitmap = bg.bitmap
+        panelBg.blurred = bg.blurred
+        keyboard.backdrop = panelBg
+        keyboard.backdropRoot = root
         val a = (bg.scrim * 255).toInt().coerceIn(0, 255)
         panelBg.scrim = if (a == 0) 0 else (a shl 24) or (if (bg.dark == true) 0x000000 else 0xFFFFFF)
         panelBg.cornerRadii = radii()
@@ -257,7 +261,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     @RequiresApi(Build.VERSION_CODES.R)
     override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle): InlineSuggestionsRequest {
         val dp = resources.displayMetrics.density
-        val t = KbTheme(isDark())
+        val t = KbTheme(KbBackground.load(this).dark ?: isDark())
         // iOS と同じく枠なしの文字だけ
         val style = InlineSuggestionUi.newStyleBuilder()
             .setChipStyle(ViewStyle.Builder()

@@ -2,16 +2,19 @@ package io.github.nuko6925.flickkb
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import java.io.File
@@ -34,6 +37,8 @@ object KbBackground {
         val mode: Int,
         val color: Int,
         val bitmap: Bitmap?,
+        /** キーの下に敷く ぼかした画像 (画像のときだけ) */
+        val blurred: Bitmap?,
         /** 0〜1。背景の上に重ねる幕の濃さ */
         val scrim: Float,
         /** キー・文字をダーク配色にするか。null なら端末のダークモードに従う */
@@ -41,6 +46,7 @@ object KbBackground {
     )
 
     private var cached: Bitmap? = null
+    private var cachedBlur: Bitmap? = null
     private var cachedStamp = 0L
 
     fun file(ctx: Context) = File(ctx.filesDir, FILE)
@@ -52,15 +58,15 @@ object KbBackground {
         return when (mode) {
             COLOR -> {
                 val c = Settings.bgColor(ctx)
-                Spec(COLOR, c, null, 0f, luminance(c) < 0.5f)
+                Spec(COLOR, c, null, null, 0f, luminance(c) < 0.5f)
             }
             IMAGE -> {
-                val bmp = bitmap(ctx) ?: return Spec(DEFAULT, 0, null, 0f, null)
+                val bmp = bitmap(ctx) ?: return Spec(DEFAULT, 0, null, null, 0f, null)
                 val lum = Settings.bgImageLum(ctx)
                 // 幕は画像が暗ければ黒、明るければ白 (読みやすい方へ寄せる)
-                Spec(IMAGE, 0, bmp, scrim, lum < 0.5f)
+                Spec(IMAGE, 0, bmp, cachedBlur, scrim, lum < 0.5f)
             }
-            else -> Spec(DEFAULT, 0, null, 0f, null)
+            else -> Spec(DEFAULT, 0, null, null, 0f, null)
         }
     }
 
@@ -70,6 +76,7 @@ object KbBackground {
         val stamp = f.lastModified()
         if (cached == null || cachedStamp != stamp) {
             cached = runCatching { BitmapFactory.decodeFile(f.path) }.getOrNull()
+            cachedBlur = cached?.let { runCatching { blur(it) }.getOrNull() }
             cachedStamp = stamp
         }
         return cached
@@ -99,6 +106,41 @@ object KbBackground {
         Settings.setBgMode(ctx, IMAGE)
     }
 
+    /**
+     * すりガラス用のぼかし: 1/24 に縮めてから箱ぼかしを 3 回。
+     * 描くときに拡大 (線形補間) するので、元の大きさで強いぼかしをかけたのと近い見た目になる
+     */
+    private fun blur(src: Bitmap): Bitmap {
+        val w = (src.width / 24).coerceAtLeast(4)
+        val h = (src.height / 24).coerceAtLeast(4)
+        val small = Bitmap.createScaledBitmap(src, w, h, true).copy(Bitmap.Config.ARGB_8888, true)
+        val px = IntArray(w * h)
+        small.getPixels(px, 0, w, 0, 0, w, h)
+        repeat(3) { boxBlur(px, w, h, 1) }
+        small.setPixels(px, 0, w, 0, 0, w, h)
+        return small
+    }
+
+    /** 横 → 縦の箱ぼかし (半径 r)。端は端の画素を伸ばす */
+    private fun boxBlur(px: IntArray, w: Int, h: Int, r: Int) {
+        val tmp = IntArray(px.size)
+        fun pass(src: IntArray, dst: IntArray, len: Int, lines: Int, at: (line: Int, i: Int) -> Int) {
+            val n = 2 * r + 1
+            for (line in 0 until lines) {
+                for (i in 0 until len) {
+                    var a = 0; var rr = 0; var g = 0; var b = 0
+                    for (k in -r..r) {
+                        val c = src[at(line, (i + k).coerceIn(0, len - 1))]
+                        a += c ushr 24; rr += (c shr 16) and 0xFF; g += (c shr 8) and 0xFF; b += c and 0xFF
+                    }
+                    dst[at(line, i)] = ((a / n) shl 24) or ((rr / n) shl 16) or ((g / n) shl 8) or (b / n)
+                }
+            }
+        }
+        pass(px, tmp, w, h) { y, x -> y * w + x }
+        pass(tmp, px, h, w) { x, y -> y * w + x }
+    }
+
     private fun averageLuminance(b: Bitmap): Float {
         val s = Bitmap.createScaledBitmap(b, 16, 16, true)
         var sum = 0f
@@ -120,6 +162,13 @@ class PanelBackground : Drawable() {
         set(v) { field = v; invalidateSelf() }
     var scrim = Color.TRANSPARENT
         set(v) { field = v; invalidateSelf() }
+    /** キーの下に敷く ぼかした画像 (KeyboardView が blurShader で使う) */
+    var blurred: Bitmap? = null
+        set(v) { if (field !== v) { field = v; shader = null } }
+
+    private var shader: BitmapShader? = null
+    private val shaderMatrix = Matrix()
+    private val cropSrc = RectF()
     var cornerRadii = FloatArray(8)
         set(v) { field = v; invalidateSelf() }
 
@@ -149,6 +198,27 @@ class PanelBackground : Drawable() {
         }
         if (Color.alpha(scrim) > 0) c.drawColor(scrim)
         c.restore()
+    }
+
+    /**
+     * ぼかした画像を、このパネルに画像を敷いたのと同じ位置・倍率で描くシェーダー。
+     * (dx, dy): シェーダーを使うビューの、このパネル内での位置
+     */
+    fun blurShader(dx: Float, dy: Float): Shader? {
+        val bmp = blurred ?: return null
+        val b = bounds
+        if (b.isEmpty) return null
+        val sh = shader ?: BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).also { shader = it }
+        // draw() の center crop と同じ切り抜き範囲を、縮小した画像の座標で
+        val k = max(b.width().toFloat() / bmp.width, b.height().toFloat() / bmp.height)
+        val sw = b.width() / k
+        val sh2 = b.height() / k
+        cropSrc.set((bmp.width - sw) / 2, (bmp.height - sh2) / 2, (bmp.width + sw) / 2, (bmp.height + sh2) / 2)
+        rect.set(b)
+        shaderMatrix.setRectToRect(cropSrc, rect, Matrix.ScaleToFit.FILL)
+        shaderMatrix.postTranslate(-dx, -dy)
+        sh.setLocalMatrix(shaderMatrix)
+        return sh
     }
 
     override fun setAlpha(alpha: Int) { paint.alpha = alpha; invalidateSelf() }
