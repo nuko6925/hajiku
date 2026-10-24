@@ -23,6 +23,7 @@ iOS 標準の日本語かなキーボード(フリック入力)の操作感と�
   - PC で中身を確認したいときは `python3 tools/vault_decrypt.py <ファイル>`(要 `pip install cryptography`。`--csv` で CSV に変換)
   - CSV での書き出し(Chrome 形式)は他のパスワード管理アプリへの移行用です。暗号化されないので、読み込ませたら削除してください
   - 個人開発で監査は受けていません。自己責任でお使いください
+- **キーボードの背景**(任意): 標準・単色・好きな画像から選べます。背景の明るさに合わせてキーと文字の配色を自動で切り替え、画像には読みやすさのための幕を重ねられます
 - **その他**: 空白長押しのトラックパッド(指をキーボードの端に置くとその方向へ送り続ける)、絵文字パネル、候補一覧の展開、ダークモード、角丸パネル
 
 日本語入力専用です(UI・変換とも日本語が前提)。
@@ -63,6 +64,7 @@ python3 tools/build_dict.py   # 辞書を生成 (app/src/main/assets/dict.db, co
 | `UserDict.kt` / `UserDictActivity.kt` | ユーザ辞書と管理画面 |
 | `CandidateBarView.kt` / `CandidatePanelView.kt` | 候補バーと展開表示 |
 | `EmojiPanelView.kt` | 絵文字パネル |
+| `KbBackground.kt` | キーボードの背景(単色・画像)と角丸パネルの描画 |
 | `tools/build_dict.py` | 辞書データの生成 |
 
 ## 既知の問題
