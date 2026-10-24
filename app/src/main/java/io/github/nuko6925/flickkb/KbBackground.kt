@@ -70,6 +70,28 @@ object KbBackground {
         }
     }
 
+    /**
+     * 設定どおりにパネルの背景を整え、キー・文字の配色を返す (IME と設定画面のプレビューで共通)
+     * systemDark: 端末のダークモード (標準の背景のとき使う)
+     */
+    fun applyTo(ctx: Context, panel: PanelBackground, systemDark: Boolean): KbTheme {
+        val bg = load(ctx)
+        val dark = bg.dark ?: systemDark
+        val text = when (Settings.textMode(ctx)) {
+            1 -> 0xFFFFFFFF.toInt()
+            2 -> 0xFF000000.toInt()
+            3 -> Settings.textColor(ctx) or 0xFF000000.toInt()
+            else -> null
+        }
+        val t = KbTheme(dark, glass = bg.mode != DEFAULT, keyOpacity = Settings.keyOpacity(ctx), textColor = text)
+        panel.color = if (bg.mode == COLOR) bg.color else t.bg
+        panel.bitmap = bg.bitmap
+        panel.blurred = bg.blurred
+        val a = (bg.scrim * 255).toInt().coerceIn(0, 255)
+        panel.scrim = if (a == 0) 0 else (a shl 24) or (if (bg.dark == true) 0x000000 else 0xFFFFFF)
+        return t
+    }
+
     private fun bitmap(ctx: Context): Bitmap? {
         val f = file(ctx)
         if (!f.exists()) return null

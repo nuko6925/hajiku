@@ -30,34 +30,36 @@ data class UiState(
     val shift: Int = 0,
 )
 
-/** glass: 背景を設定した時。キーを半透明にして背景を透かす (画像ならぼかしを敷く) */
-class KbTheme(dark: Boolean, val glass: Boolean = false) {
+/**
+ * glass: 背景を設定した時。キーを半透明にして背景を透かす (画像ならぼかしを敷く)
+ * keyOpacity: 半透明キーの不透明度 0〜100 (-1 = 自動: ライト 55 / ダーク 25)
+ * textColor: 文字色の指定 (null = 配色どおり)
+ */
+class KbTheme(dark: Boolean, val glass: Boolean = false, keyOpacity: Int = -1, textColor: Int? = null) {
     val bg = if (dark) 0xFF2B2B2D.toInt() else 0xFFE0E1E6.toInt()
     /** フリックの吹き出し・十字ガイドは他のキーに重なるので常に不透明 */
     val popup = if (dark) 0xFF5C5C5F.toInt() else 0xFFFFFFFF.toInt()
-    val key = when {
-        !glass -> popup
-        dark -> 0x40FFFFFF
-        else -> 0x8CFFFFFF.toInt()
-    }
+    /** 実際の半透明キーの不透明度 (0〜100) */
+    val keyOpacity = if (keyOpacity in 0..100) keyOpacity else if (dark) 25 else 55
+    val key = if (!glass) popup else (alpha(this.keyOpacity) shl 24) or 0xFFFFFF
     val func = key
-    val pressed = when {
-        !glass -> if (dark) 0xFF3A3A3C.toInt() else 0xFFB4B8C1.toInt()
-        dark -> 0x14FFFFFF
-        else -> 0x33FFFFFF
-    }
+    val pressed = if (!glass) (if (dark) 0xFF3A3A3C.toInt() else 0xFFB4B8C1.toInt())
+        else (alpha(this.keyOpacity * 0.45f) shl 24) or 0xFFFFFF
     val shadow = when {
         glass -> 0x26000000
         dark -> 0x66000000
         else -> 0x55898A8D
     }
-    val text = if (dark) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
-    val disabled = if (dark) 0xFF8E8E93.toInt() else 0xFFA5A5A5.toInt()
+    val text = textColor ?: if (dark) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
+    val disabled = if (textColor != null) (textColor and 0xFFFFFF) or 0x8C000000.toInt()
+        else if (dark) 0xFF8E8E93.toInt() else 0xFFA5A5A5.toInt()
     /** 押下中・フリック選択中の青 (ライト/ダーク共通) */
     val accent = 0xFF3C86F4.toInt()
     val onAccent = 0xFFFFFFFF.toInt()
     val candSelected = if (glass) key else popup
     val separator = if (dark) 0xFF4A4A4D.toInt() else 0xFFB3B6BD.toInt()
+
+    private fun alpha(percent: Number) = (percent.toFloat() * 255f / 100f).toInt().coerceIn(0, 255)
 }
 
 @SuppressLint("ViewConstructor")
