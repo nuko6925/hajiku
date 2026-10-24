@@ -101,17 +101,25 @@ class MainActivity : Activity() {
                 when (i) {
                     0 -> { Settings.setBgMode(this, KbBackground.DEFAULT); toast("標準の背景に戻しました") }
                     1 -> chooseColor()
-                    2 -> {
-                        @Suppress("DEPRECATION")
-                        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                            addCategory(Intent.CATEGORY_OPENABLE); type = "image/*"
-                        }, REQ_BG_IMAGE)
-                    }
+                    2 -> pickImage()
                     3 -> chooseScrim()
                 }
             }
             .setNegativeButton("閉じる", null)
             .show()
+    }
+
+    /** 端末で既定にしている写真アプリ (ギャラリー) で選ぶ。無ければ画像を扱えるアプリから */
+    private fun pickImage() {
+        @Suppress("DEPRECATION")
+        try {
+            startActivityForResult(Intent(Intent.ACTION_PICK, android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                .setType("image/*"), REQ_BG_IMAGE)
+        } catch (e: android.content.ActivityNotFoundException) {
+            startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE); type = "image/*"
+            }, REQ_BG_IMAGE)
+        }
     }
 
     private fun chooseColor() {

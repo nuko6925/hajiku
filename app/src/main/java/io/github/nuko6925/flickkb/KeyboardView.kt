@@ -3,6 +3,7 @@ package io.github.nuko6925.flickkb
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -29,18 +30,33 @@ data class UiState(
     val shift: Int = 0,
 )
 
-class KbTheme(dark: Boolean) {
+/** glass: 背景を設定した時。キーを半透明にして背景を透かす (画像ならぼかしを敷く) */
+class KbTheme(dark: Boolean, val glass: Boolean = false) {
     val bg = if (dark) 0xFF2B2B2D.toInt() else 0xFFE0E1E6.toInt()
-    val key = if (dark) 0xFF5C5C5F.toInt() else 0xFFFFFFFF.toInt()
+    /** フリックの吹き出し・十字ガイドは他のキーに重なるので常に不透明 */
+    val popup = if (dark) 0xFF5C5C5F.toInt() else 0xFFFFFFFF.toInt()
+    val key = when {
+        !glass -> popup
+        dark -> 0x40FFFFFF
+        else -> 0x8CFFFFFF.toInt()
+    }
     val func = key
-    val pressed = if (dark) 0xFF3A3A3C.toInt() else 0xFFB4B8C1.toInt()
-    val shadow = if (dark) 0x66000000 else 0x55898A8D
+    val pressed = when {
+        !glass -> if (dark) 0xFF3A3A3C.toInt() else 0xFFB4B8C1.toInt()
+        dark -> 0x14FFFFFF
+        else -> 0x33FFFFFF
+    }
+    val shadow = when {
+        glass -> 0x26000000
+        dark -> 0x66000000
+        else -> 0x55898A8D
+    }
     val text = if (dark) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
     val disabled = if (dark) 0xFF8E8E93.toInt() else 0xFFA5A5A5.toInt()
     /** 押下中・フリック選択中の青 (ライト/ダーク共通) */
     val accent = 0xFF3C86F4.toInt()
     val onAccent = 0xFFFFFFFF.toInt()
-    val candSelected = if (dark) 0xFF5C5C5F.toInt() else 0xFFFFFFFF.toInt()
+    val candSelected = if (glass) key else popup
     val separator = if (dark) 0xFF4A4A4D.toInt() else 0xFFB3B6BD.toInt()
 }
 
@@ -58,6 +74,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     var theme = KbTheme(false)
         set(v) { field = v; invalidate() }
+
+    /** すりガラス用: キーボード全体の背景と、その背景を描いているビュー (位置合わせ用) */
+    var backdrop: PanelBackground? = null
+    var backdropRoot: View? = null
 
     var mode: Mode = Mode.KANA
         set(v) { field = v; keys = Layouts.of(v); cols = Layouts.cols(v); layoutKeys(); invalidate() }
@@ -320,7 +340,32 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     // ---- 描画 ----
 
+    private val keyPath = Path()
+    private val frostPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    /** この描画でキーの下に敷く ぼかした背景 (無ければ null) */
+    private var frost: Paint? = null
+
+    /** 背景を描いているビューから見たこのビューの位置に合わせて、ぼかした背景のシェーダーを用意 */
+    private fun prepareFrost() {
+        frost = null
+        val bd = backdrop ?: return
+        val root = backdropRoot ?: return
+        if (!theme.glass) return
+        var x = 0f
+        var y = 0f
+        var v: View = this
+        while (v !== root) {
+            x += v.left + v.translationX
+            y += v.top + v.translationY
+            v = v.parent as? View ?: return
+        }
+        val sh = bd.blurShader(x, y) ?: return
+        frostPaint.shader = sh
+        frost = frostPaint
+    }
+
     override fun onDraw(c: Canvas) {
+        prepareFrost()
         // 背景は親 (角丸パネル) が描く
         for (k in keys) drawKey(c, k)
         drawGuide(c)
@@ -340,10 +385,24 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             drawEmoji(c, r.centerX(), r.centerY(), 13 * dp, if (dim) theme.disabled else theme.text)
             return
         }
-        // 影 → キー面
+        // 影 → (すりガラスなら ぼかした背景 → 幕) → キー面
         fill.color = theme.shadow
         tmp.set(r); tmp.offset(0f, 1 * dp)
-        c.drawRoundRect(tmp, radius, radius, fill)
+        if (theme.glass) {
+            // 半透明のキーの下に影が透けないよう、影はキーの外側だけ
+            keyPath.reset()
+            keyPath.addRoundRect(r, radius, radius, Path.Direction.CW)
+            c.save()
+            c.clipOutPath(keyPath)
+            c.drawRoundRect(tmp, radius, radius, fill)
+            c.restore()
+            if (!blue) frost?.let { f ->
+                c.drawRoundRect(r, radius, radius, f)
+                backdrop?.scrim?.takeIf { Color.alpha(it) > 0 }?.let { fill.color = it; c.drawRoundRect(r, radius, radius, fill) }
+            }
+        } else {
+            c.drawRoundRect(tmp, radius, radius, fill)
+        }
         fill.color = when {
             blue -> theme.accent
             flicking -> theme.pressed
@@ -434,7 +493,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         fill.color = theme.shadow
         c.drawPath(crossPath, fill)
         c.restore()
-        fill.color = theme.key
+        fill.color = theme.popup
         c.drawPath(crossPath, fill)
 
         // 選択中のマスを青で (十字の形で切り抜くので外側の角は丸いまま)
@@ -497,7 +556,7 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         fill.color = theme.shadow
         c.drawPath(crossPath, fill)
         c.restore()
-        fill.color = theme.key
+        fill.color = theme.popup
         c.drawPath(crossPath, fill)
         text(c, s, body.centerX(), body.centerY(), keyH * 0.6f, theme.text)
     }
