@@ -219,7 +219,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             cls == InputType.TYPE_CLASS_TEXT && v in setOf(InputType.TYPE_TEXT_VARIATION_PASSWORD,
                 InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD, InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD) -> Mode.QWERTY
             cls == InputType.TYPE_CLASS_TEXT && v in setOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
-                InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_URI) -> Mode.ALPHA
+                InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS) -> Mode.ALPHA
+            // URL 欄はブラウザの検索欄を兼ねるので日本語から (iOS の Safari・Gboard と同じ)
             else -> Mode.KANA
         }
     }
