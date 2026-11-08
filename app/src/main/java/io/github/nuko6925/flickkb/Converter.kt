@@ -75,6 +75,9 @@ class Converter(context: Context) {
             }
             // 文全体の変換 (今日はいい天気)。複数文節の文は学習しない
             path?.let { add(it.surface, full, learnable = it.segments.size == 1) }
+            // 1 文節の活用形の別表記 (こない → 来ない、でない → 出ない、きた → 来た・着た)。
+            // 来+ない のような組み合わせは辞書に 1 語では無いので、別案から拾う
+            if (path != null && path.segments.size == 1) sameTailVariants(path, paths).forEach { add(it, full) }
             // 先頭文節の候補 (確定すると残りは未確定のまま続く)。
             // iOS と同じく長い文は単語ごとに確かめて確定できるよう、文全体の変換のすぐ後ろに上位を並べる
             val segs = path?.segments.orEmpty()
@@ -187,6 +190,22 @@ class Converter(context: Context) {
         arrayOf(r))
 
     private class Pred(val reading: String, val surface: String, val cost: Int, val lid: Int, val rid: Int)
+
+    /**
+     * 1 文節の別案のうち、付属語 (ない・た …) が同じで、先頭の語だけが同じ読みの別の語のもの。
+     * 「娘内」「で泣い」のような区切り違いの別案や、コストの離れた案は出さない
+     */
+    private fun sameTailVariants(best: Path, paths: List<Path>): List<String> {
+        val b = best.segments[0]
+        if (b.tail.isEmpty()) return emptyList()
+        val heads by lazy { exact(b.headReading).toSet() }
+        return paths.drop(1).filter { p ->
+            p.cost <= best.cost + VARIANT_MARGIN && p.segments.size == 1 && p.segments[0].let { s ->
+                s.tail == b.tail && s.headReading == b.headReading &&
+                    (s.surface.dropLast(s.tail.length).let { h -> h == b.headReading || h in heads })
+            }
+        }.map { it.surface }
+    }
 
     private fun predict(r: String): List<Pred> {
         val db = dict ?: return emptyList()
@@ -398,6 +417,8 @@ class Converter(context: Context) {
         private const val EMO_MAX = 8
         /** 文全体の変換案の数 */
         private const val NBEST = 6
+        /** 1 文節の別表記として出す別案の、1 番目の案とのコスト差の上限 */
+        private const val VARIANT_MARGIN = 2000
         private const val TYPO_MAX_COST = 7000
         /** 文全体の変換のすぐ後ろに並べる先頭文節の候補の数 */
         private const val FIRST_SEG_TOP = 5
