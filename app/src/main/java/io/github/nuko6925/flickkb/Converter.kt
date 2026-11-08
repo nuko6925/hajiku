@@ -21,9 +21,8 @@ data class Candidate(
 )
 
 /**
- * 単語単位のかな漢字変換。
- * 全体一致 → 最長一致の先頭文節 → 前方一致予測 の順で候補を出す。
- * 文節区切りの最適化 (ラティス + 連接コスト) はしていない。
+ * かな漢字変換。ラティス (Lattice) による文全体の変換を先頭に、
+ * そのすぐ後ろに先頭文節の候補 (単語ごとに確定できるように)、続いて別案・予測・辞書候補の順で出す。
  */
 class Converter(context: Context) {
     @Volatile private var dict: SQLiteDatabase? = null
@@ -76,6 +75,15 @@ class Converter(context: Context) {
             }
             // 文全体の変換 (今日はいい天気)。複数文節の文は学習しない
             path?.let { add(it.surface, full, learnable = it.segments.size == 1) }
+            // 先頭文節の候補 (確定すると残りは未確定のまま続く)。
+            // iOS と同じく長い文は単語ごとに確かめて確定できるよう、文全体の変換のすぐ後ろに上位を並べる
+            val segs = path?.segments.orEmpty()
+            val firstSeg = if (segs.size >= 2) {
+                val s0 = segs[0]
+                (listOf(s0.surface) + exact(s0.headReading).take(12).map { it + s0.tail } +
+                    exact(reading.substring(0, s0.len))).distinct().map { it to s0.len }
+            } else emptyList()
+            firstSeg.take(FIRST_SEG_TOP).forEach { (t, l) -> add(t, l) }
             // 文全体の別案 (一人で変える → 一人で帰る / 一人て変える …)。単語1つの時は辞書候補に任せる
             if (path != null && path.segments.size >= 2) {
                 paths.drop(1).forEach { add(it.surface, full, learnable = false) }
@@ -101,14 +109,8 @@ class Converter(context: Context) {
             if (full >= 3 && ex.isEmpty() && preds.isEmpty()) {
                 typo(reading).forEach { (r, s) -> add(s, full, r = r) }
             }
-            // 先頭文節の候補 (確定すると残りは未確定のまま続く)
-            val segs = path?.segments.orEmpty()
-            if (segs.size >= 2) {
-                val s0 = segs[0]
-                add(s0.surface, s0.len)
-                exact(s0.headReading).take(12).forEach { add(it + s0.tail, s0.len) }
-                exact(reading.substring(0, s0.len)).forEach { add(it, s0.len) }
-            }
+            // 先頭文節の残りの候補
+            firstSeg.drop(FIRST_SEG_TOP).forEach { (t, l) -> add(t, l) }
             ex.forEach { add(it, full) }
             add(reading, full)
             add(toKatakana(reading), full)
@@ -397,6 +399,8 @@ class Converter(context: Context) {
         /** 文全体の変換案の数 */
         private const val NBEST = 6
         private const val TYPO_MAX_COST = 7000
+        /** 文全体の変換のすぐ後ろに並べる先頭文節の候補の数 */
+        private const val FIRST_SEG_TOP = 5
         private val TYPO_GROUP: Map<Char, String> = buildMap {
             for (g in listOf(
                 "あいうえおぁぃぅぇぉゔ", "かきくけこがぎぐげご", "さしすせそざじずぜぞ",
