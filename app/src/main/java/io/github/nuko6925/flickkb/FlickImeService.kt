@@ -499,7 +499,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
                 composer.endToggle()
                 if (direct) flushDirect()
                 keyboard.mode = key.targetMode!!
-                if (keyboard.mode == Mode.ALPHA) updatePredictions() else clearPredictions()
+                // 予測は配列ではなくカーソル直前の文脈で決まるので、切り替えても残す (iOS と同じ)
+                updatePredictions()
                 updateUi()
             }
             KeyType.DELETE -> edit {
@@ -764,23 +765,28 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         var prev: String? = null
         var list: List<Candidate> = emptyList()
         var needSpace = false
-        if (ok && keyboard.mode == Mode.ALPHA) {
-            englishWordBeforeCursor()?.let { w ->
-                prev = w.first
-                needSpace = !w.second
-                list = converter.nextWords(w.first).map { Candidate(it, 0, learnable = false) }
+        var ja = false
+        if (ok) {
+            // 配列ではなくカーソル直前の文脈で選ぶ (日本語 → ABC → 数字 と切り替えても同じ予測が残る)。
+            // 英単語の直後なら英語 (ABC では最優先)、確定した日本語の語・文末の直後なら日本語
+            val ew = englishWordBeforeCursor()
+            val jc = if (ew != null && keyboard.mode == Mode.ALPHA) null else japaneseContext()
+            if (jc != null) {
+                ja = true
+                prev = jc
+                list = if (jc == Converter.SENTENCE_END) converter.afterSentence()
+                    else converter.nextJapanese(lastCommit?.first, jc)
             }
-        } else if (ok && keyboard.mode == Mode.KANA) {
-            prev = japaneseContext()
-            list = when (val p = prev) {
-                null -> emptyList()
-                Converter.SENTENCE_END -> converter.afterSentence()
-                else -> converter.nextJapanese(lastCommit?.first, p)
+            if (list.isEmpty() && ew != null) {
+                ja = false
+                prev = ew.first
+                needSpace = !ew.second
+                list = converter.nextWords(ew.first).map { Candidate(it, 0, learnable = false) }
             }
         }
         if (prev == null || list.isEmpty()) { clearPredictions(); return }
         predicting = true
-        predJa = keyboard.mode == Mode.KANA
+        predJa = ja
         predPrev = prev
         predNeedSpace = needSpace
         cands = list
