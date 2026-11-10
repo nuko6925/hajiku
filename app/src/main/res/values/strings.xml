@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hajiku</string>
+    <string name="ime_name">Hajiku</string>
+    <string name="subtype_ja">日本語 (フリック)</string>
+</resources>
