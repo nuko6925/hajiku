@@ -19,8 +19,8 @@ android {
         applicationId = "io.github.nuko6925.flickkb"
         minSdk = 29
         targetSdk = 35
-        versionCode = 31
-        versionName = "0.9.6"
+        versionCode = 32
+        versionName = "0.9.7"
     }
 
     signingConfigs {
