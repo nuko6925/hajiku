@@ -14,6 +14,10 @@ object Settings {
     fun setFullwidthSpace(ctx: Context, v: Boolean) =
         prefs(ctx).edit().putBoolean(FULLWIDTH_SPACE, v).apply()
 
+    /** 片手モード: 0 = 中央 (通常), 1 = 左寄せ, 2 = 右寄せ */
+    fun oneHand(ctx: Context) = prefs(ctx).getInt("one_hand", 0)
+    fun setOneHand(ctx: Context, v: Int) = prefs(ctx).edit().putInt("one_hand", v).apply()
+
     // ---- キーボードの背景 (KbBackground) ----
 
     fun bgMode(ctx: Context) = prefs(ctx).getInt("bg_mode", KbBackground.DEFAULT)

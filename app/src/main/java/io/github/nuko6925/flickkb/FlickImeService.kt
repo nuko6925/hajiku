@@ -50,6 +50,10 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
     private var shift = 0
     private var lastShiftTap = 0L
     private lateinit var kbContainer: LinearLayout
+    /** 片手モード (左右に寄せる) のための入れ物 */
+    private lateinit var oneHand: OneHandLayout
+    /** 絵文字キー長押しのメニュー */
+    private lateinit var kbMenu: KbMenuView
     private lateinit var root: FrameLayout
     private lateinit var converter: Converter
 
@@ -108,12 +112,26 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             addView(autofillBar, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         }
         emojiPanel = EmojiPanelView(this, this).apply { visibility = View.GONE }
+        oneHand = OneHandLayout(this, keyboard) { setOneHand(0) }
+        kbMenu = KbMenuView(this, object : KbMenuView.Actions {
+            override fun openSettings() {
+                runCatching {
+                    startActivity(Intent(this@FlickImeService, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
+                }.onFailure { Diag.log("ime: 設定画面を開けなかった $it") }
+            }
+            override fun switchInputMethod() {
+                getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
+            }
+            override fun openEmoji() = showEmoji(true)
+            override fun setOneHand(side: Int) = this@FlickImeService.setOneHand(side)
+        })
         kbContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false   // 上段フリックのポップアップを候補バー上に描くため
             clipToPadding = false
             addView(barSlot, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (40 * dp).toInt()))
-            addView(keyboard, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(oneHand, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
         root = FrameLayout(this).apply {
             clipChildren = false
@@ -122,6 +140,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             // 絵文字パネルはキーボード部(候補バー込み)と同じ大きさで重ねる
             addView(emojiPanel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             addView(candPanel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(kbMenu, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             setOnApplyWindowInsetsListener { v, insets ->
                 val bottom = if (Build.VERSION.SDK_INT >= 30)
                     insets.getInsets(WindowInsets.Type.navigationBars()).bottom
@@ -154,6 +173,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         keyboard.backdropRoot = root
         panelBg.cornerRadii = radii()
         root.background = panelBg
+        oneHand.chevronColor = t.disabled
     }
 
     /**
@@ -180,6 +200,8 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
         reset()
         showEmoji(false)
         showCandPanel(false)
+        kbMenu.hide()
+        oneHand.side = Settings.oneHand(this)
         fullwidthSpace = Settings.fullwidthSpace(this)
         val cls = info.inputType and InputType.TYPE_MASK_CLASS
         val variation = info.inputType and InputType.TYPE_MASK_VARIATION
@@ -244,6 +266,7 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
+        if (::kbMenu.isInitialized) kbMenu.hide()
         inlineGen++
         setInline(emptyList(), emptyList(), emptyList())
         currentInputConnection?.finishComposingText()
@@ -578,11 +601,34 @@ class FlickImeService : InputMethodService(), KeyboardView.Listener, EmojiPanelV
             } else if (direct) edit { commitAll(); updateUi() }
             true
         }
+        // iOS の地球儀キーと同じく、長押しでメニュー (設定・入力方法の切り替え・絵文字・片手モード)
         KeyType.EMOJI -> {
-            getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
+            showKbMenu()
             true
         }
         else -> false
+    }
+
+    override fun onLongPressDrag(key: Key, rawX: Float, rawY: Float, up: Boolean) {
+        if (key.type == KeyType.EMOJI) kbMenu.dragTo(rawX, rawY, up)
+    }
+
+    /** 絵文字キーの真上にメニューを開く */
+    private fun showKbMenu() {
+        val kb = IntArray(2)
+        val m = IntArray(2)
+        keyboard.getLocationInWindow(kb)
+        kbMenu.getLocationInWindow(m)
+        val left = kb[0] - m[0] + (6 * resources.displayMetrics.density).toInt()
+        val bottom = kb[1] - m[1] + keyboard.emojiKeyTop().toInt()
+        keyboard.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        kbMenu.show(keyboard.theme, Settings.oneHand(this), left, bottom)
+    }
+
+    /** 片手モード: 0 = 中央, 1 = 左寄せ, 2 = 右寄せ */
+    private fun setOneHand(side: Int) {
+        Settings.setOneHand(this, side)
+        oneHand.side = side
     }
 
     override fun onCursorMove(dx: Int, dy: Int) {
