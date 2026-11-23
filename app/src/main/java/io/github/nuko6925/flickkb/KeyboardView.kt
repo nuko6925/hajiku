@@ -72,7 +72,19 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
         /** true を返すと離した時の onFunction を抑止。SPACE で true ならトラックパッドモード */
         fun onFunctionLongPress(key: Key): Boolean
         fun onCursorMove(dx: Int, dy: Int)
+        /** 長押しで出したメニューの上を指でなぞっている (画面座標)。up = 指を離した */
+        fun onLongPressDrag(key: Key, rawX: Float, rawY: Float, up: Boolean) {}
     }
+
+    /**
+     * キーの高さを決める基準の幅 (0 ならこのビューの幅)。
+     * 片手モードで幅を狭めても、キーの高さ (キーボード全体の高さ) は変えないため
+     */
+    var heightBasisWidth = 0
+        set(v) { if (field != v) { field = v; requestLayout() } }
+
+    /** 絵文字キーの上端 (このビュー内の y)。長押しメニューの位置合わせ用 */
+    fun emojiKeyTop(): Float = rects.entries.firstOrNull { it.key.type == KeyType.EMOJI }?.value?.top ?: height.toFloat()
 
     var theme = KbTheme(false)
         set(v) { field = v; invalidate() }
@@ -114,7 +126,8 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
 
     private fun calcKeySize(width: Int) {
         keyW = (width - 2 * margin - 4 * gap) / 5f
-        keyH = (keyW * 0.645f).coerceIn(40 * dp, 54 * dp)
+        val basis = if (heightBasisWidth > 0) (heightBasisWidth - 2 * margin - 4 * gap) / 5f else keyW
+        keyH = (basis * 0.645f).coerceIn(40 * dp, 54 * dp)
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -250,6 +263,10 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
                     trackpadMove(t, x, y)
                     return true
                 }
+                if (t.longPressed && t.key.type == KeyType.EMOJI) {
+                    listener.onLongPressDrag(t.key, e.getRawX(i), e.getRawY(i), false)
+                    return true
+                }
                 t.lastX = x
                 t.lastY = y
                 if (t.key.type != KeyType.CHAR) return true
@@ -262,7 +279,12 @@ class KeyboardView(context: Context, private val listener: Listener) : View(cont
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 val t = active ?: return true
-                if (e.getPointerId(e.actionIndex) == t.id) release(t)
+                if (e.getPointerId(e.actionIndex) == t.id) {
+                    if (t.longPressed && t.key.type == KeyType.EMOJI) {
+                        listener.onLongPressDrag(t.key, e.getRawX(e.actionIndex), e.getRawY(e.actionIndex), true)
+                    }
+                    release(t)
+                }
             }
             MotionEvent.ACTION_CANCEL -> {
                 handler.removeCallbacksAndMessages(null)
